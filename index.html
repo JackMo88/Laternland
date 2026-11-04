@@ -1052,7 +1052,8 @@ moon.shadow.bias = -.0005; moon.shadow.camera.updateProjectionMatrix();
 scene.add(moon, moon.target);
 // Back light (pink evening sky) and cool fill light: softer, rounder shapes
 const rim = new THREE.DirectionalLight(0xffa8d0, .42); rim.position.set(20, 14, -40); scene.add(rim, rim.target);
-const fill = new THREE.DirectionalLight(0x9fb8ff, .22); fill.position.set(-30, 8, 30); scene.add(fill);
+// (the old cool fill light is folded into the hemisphere light: one light less for every pixel)
+const fill = { intensity:0, position:new V3() };
 // One travelling point light (caves, hollow). The number of lights never changes, so shaders never recompile mid-game.
 const carryLight = new THREE.PointLight(0xffd9a0, 0, 9, 1.6); scene.add(carryLight);
 // Glitter dust floating around the camera
@@ -1116,31 +1117,62 @@ function buildGrid(){
 const NO_BOXES = [];
 function boxesNear(p){ return world.grid.get(cellKey(Math.floor(p.x/CELL), Math.floor(p.z/CELL))) || NO_BOXES; }
 
-/* --- Static merge: all static meshes that share a material become one mesh per 50 m chunk --- */
+/* --- Static merge ---
+   Every static mesh with a plain (non-glowing, non-transparent) material is baked into ONE mesh per 50 m chunk,
+   with its colour stored per vertex. Glowing materials are merged per material. That turns hundreds of
+   draw calls into a few dozen, which is what makes phones smooth. */
+const plainMats = {};
+// On phones the scenery uses cheap per-vertex lighting (Lambert); faceted normals keep the low-poly look
+const plainMat = (r, m, flat, side) => { const cheap = lowQ(), k = r + '|' + m + '|' + flat + '|' + side + cheap;
+  return plainMats[k] || (plainMats[k] = cheap ? new THREE.MeshLambertMaterial({ color:0xffffff, vertexColors:true, side }) : new THREE.MeshStandardMaterial({ color:0xffffff, vertexColors:true, roughness:r, metalness:m, flatShading:flat, side })); };
+const isPlain = m => m && m.isMeshStandardMaterial && !m.map && !m.transparent && !m.vertexColors && (!m.emissive || m.emissive.getHex() === 0);
+function bakeGeometry(list, base, plain, flatN){
+  let n = 0;
+  const geos = list.map(o => { const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone(); if (!geo.attributes.normal) geo.computeVertexNormals();
+    geo.applyMatrix4(base ? new THREE.Matrix4().multiplyMatrices(base, o.matrixWorld) : o.matrixWorld);
+    if (flatN && o.material.flatShading) geo.computeVertexNormals();   // non-indexed: one normal per face = faceted look with per-vertex lighting
+    n += geo.attributes.position.count; return { geo, col:o.material.color }; });
+  const pos = new Float32Array(n*3), nor = new Float32Array(n*3), col = plain ? new Float32Array(n*3) : null; let off = 0;
+  for (const { geo, col:c } of geos){ const cnt = geo.attributes.position.count; pos.set(geo.attributes.position.array, off*3); nor.set(geo.attributes.normal.array, off*3);
+    if (col) for (let i=0;i<cnt;i++){ col[(off+i)*3] = c.r; col[(off+i)*3+1] = c.g; col[(off+i)*3+2] = c.b; }
+    off += cnt; geo.dispose(); }
+  const bg = new THREE.BufferGeometry(); bg.setAttribute('position', new THREE.BufferAttribute(pos,3)); bg.setAttribute('normal', new THREE.BufferAttribute(nor,3));
+  if (col) bg.setAttribute('color', new THREE.BufferAttribute(col,3));
+  bg.computeBoundingSphere(); return bg;
+}
 function mergeStatic(){
   if (!THREE.BufferGeometry.prototype.toNonIndexed) return;
   const root = world.deco; root.updateMatrixWorld(true);
-  const groups = new Map(), kill = [];
+  const groups = new Map(), kill = [], cheapShadows = lowQ();
   root.traverse(o => {
     if (!o.isMesh) return;
     for (let p = o; p && p !== root; p = p.parent) if (p.userData.dyn || !p.visible) return;
     const m = o.material;
     if (Array.isArray(m) || m.map || m.transparent) return;
     T1.setFromMatrixPosition(o.matrixWorld);
-    const key = m.uuid + (o.castShadow ? 'c' : '') + (o.receiveShadow ? 'r' : '') + Math.floor(T1.x/50) + ',' + Math.floor(T1.z/50);
-    let g = groups.get(key); if (!g) groups.set(key, g = { mat:m, cast:o.castShadow, recv:o.receiveShadow, list:[] });
+    const plain = isPlain(m), cast = o.castShadow && !cheapShadows;   // on phones the scenery doesn't cast shadows (characters still do)
+    const key = (plain ? 'P' + m.roughness + m.metalness + m.flatShading + m.side : m.uuid) + (cast ? 'c' : '') + (o.receiveShadow ? 'r' : '') + Math.floor(T1.x/50) + ',' + Math.floor(T1.z/50);
+    let g = groups.get(key); if (!g) groups.set(key, g = { mat:plain ? plainMat(m.roughness, m.metalness, m.flatShading, m.side) : m, plain, cast, recv:o.receiveShadow, list:[] });
     g.list.push(o); kill.push(o);
   });
   for (const g of groups.values()){
-    let n = 0;
-    const geos = g.list.map(m => { const geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone(); if (!geo.attributes.normal) geo.computeVertexNormals(); geo.applyMatrix4(m.matrixWorld); n += geo.attributes.position.count; return geo; });
-    const pos = new Float32Array(n*3), nor = new Float32Array(n*3); let off = 0;
-    for (const geo of geos){ pos.set(geo.attributes.position.array, off*3); nor.set(geo.attributes.normal.array, off*3); off += geo.attributes.position.count; geo.dispose(); }
-    const bg = new THREE.BufferGeometry(); bg.setAttribute('position', new THREE.BufferAttribute(pos,3)); bg.setAttribute('normal', new THREE.BufferAttribute(nor,3)); bg.computeBoundingSphere();
-    const mm = new THREE.Mesh(bg, g.mat); mm.castShadow = g.cast; mm.receiveShadow = g.recv; mm.matrixAutoUpdate = false; world.merged.add(mm);
+    const mm = new THREE.Mesh(bakeGeometry(g.list, null, g.plain, g.plain && cheapShadows), g.mat); mm.castShadow = g.cast; mm.receiveShadow = g.recv; mm.matrixAutoUpdate = false; world.merged.add(mm);
   }
   for (const o of kill) o.parent.remove(o);
   world.mergedCount = groups.size; world.mergedFrom = kill.length;
+}
+// Bake a character model (villagers, eggs, the owl) into one mesh: parts listed in `keep` stay separate (they animate)
+function bakeGroup(group, keep){
+  if (!THREE.BufferGeometry.prototype.toNonIndexed) return;
+  group.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(group.matrixWorld).invert ? new THREE.Matrix4().copy(group.matrixWorld).invert() : new THREE.Matrix4().getInverse(group.matrixWorld);
+  const list = [];
+  group.traverse(o => { if (!o.isMesh || !isPlain(o.material) || (keep && keep.has(o))) return; for (let p = o.parent; p && p !== group; p = p.parent) if (p.userData.keep || (keep && keep.has(p))) return; list.push(o); });
+  if (list.length < 2) return;
+  const flat = list[0].material.flatShading;
+  const mm = new THREE.Mesh(bakeGeometry(list, inv, true), plainMat(.75, 0, false, THREE.FrontSide)); mm.castShadow = true; mm.receiveShadow = true;
+  for (const o of list) o.parent.remove(o);
+  group.add(mm);
 }
 
 /* --- Building blocks --- */
@@ -1234,16 +1266,19 @@ function rockLump(x,y,z,s=1,col='#8a8296'){
   const r = mesh(new THREE.DodecahedronGeometry(.5*s,0), mat(col)); r.position.set(x,y+.25*s,z); r.rotation.set(rand(0,3),rand(0,3),0); world.deco.add(r); return r;
 }
 // Lantern: small (decor/checkpoint) or big (Star Lantern)
-function makeLantern(x,y,z,big=false){
+let SHARED_GLASS = null;
+function makeLantern(x,y,z,big=false,own=false){
   const g = new THREE.Group(); g.position.set(x,y,z);
-  const glass = new THREE.MeshStandardMaterial({ color:0xffe7a8, emissive:0xffa43c, emissiveIntensity:.05, roughness:.4, transparent:true, opacity:.85 });
+  const glass = big ? new THREE.MeshStandardMaterial({ color:0xffe7a8, emissive:0xffa43c, emissiveIntensity:.05, roughness:.4, transparent:true, opacity:.85 })
+    : own ? new THREE.MeshStandardMaterial({ color:0xffe7a8, emissive:0xffa43c, emissiveIntensity:.05, roughness:.4 })
+    : (SHARED_GLASS || (SHARED_GLASS = new THREE.MeshStandardMaterial({ color:0xffe7a8, emissive:0xffa43c, emissiveIntensity:.05, roughness:.4 })));
   if (big){
     const base = mesh(new THREE.BoxGeometry(1.8,.5,1.8), mat('#4d3f5c')); base.position.y = .25; g.add(base);
     for (const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]){ const bar = mesh(new THREE.BoxGeometry(.14,2.2,.14), mat('#3a2f4a')); bar.position.set(sx*.62,1.6,sz*.62); g.add(bar); }
     const core = mesh(new THREE.BoxGeometry(1.05,1.8,1.05), glass, false); core.position.y = 1.55; g.add(core);
     const roof = mesh(new THREE.ConeGeometry(1.2,.9,4), mat('#3a2f4a')); roof.rotation.y = Math.PI/4; roof.position.y = 3.15; g.add(roof);
     const ring = mesh(new THREE.TorusGeometry(.22,.06,6,12), mat('#ffc65a',{ metalness:.3 })); ring.position.y = 3.75; g.add(ring);
-    const light = new THREE.PointLight(0xffc06a, 0, 30, 1.6); light.position.y = 1.6; g.add(light);
+    const light = { intensity:0 };   // glow only: a real point light here made every pixel in the world more expensive
     world.deco.add(g);
     return { g, glass, light, big:true, glow:0 };
   }
@@ -1336,8 +1371,16 @@ function backdrop(cx, cz, rIn, rOut, n, seedCols){
 // Sparkstone to collect
 const GEM_GEO = new THREE.OctahedronGeometry(.22,0);
 const GEM_MAT = glowMat('#ff8fd0', .55, { flatShading:true, roughness:.25, metalness:.2 });
+// All Sparkstones are drawn as ONE instanced mesh; each gem keeps a light stand-in object for its position
+let GEM_IM = null;
+function syncGems(){
+  if (!GEM_IM){ GEM_IM = new THREE.InstancedMesh(GEM_GEO, GEM_MAT, 200); GEM_IM.castShadow = true; GEM_IM.frustumCulled = false; scene.add(GEM_IM); }
+  let n = 0;
+  for (const g of world.gems){ if (g.taken || !g.m.visible || n >= 200) continue; g.m.updateMatrix(); GEM_IM.setMatrixAt(n++, g.m.matrix); }
+  GEM_IM.count = n; GEM_IM.instanceMatrix.needsUpdate = true;
+}
 function gem(id,x,y,z){
-  const m = mesh(GEM_GEO, GEM_MAT, true, false); m.position.set(x,y+.6,z); m.scale.y = 1.3; scene.add(m);
+  const m = new THREE.Object3D(); m.position.set(x,y+.6,z); m.scale.y = 1.3;
   const g = { id, pos:new V3(x,y+.6,z), m, taken:false, base:y+.6, ph:rand(0,6) }; world.gems.push(g); return g;
 }
 
@@ -1637,6 +1680,7 @@ function buildFunkiMesh(c){
   const shoe = SHOE_COLORS[c.shoes ?? 0];
   const feetMat = new THREE.MeshStandardMaterial({ color: shoe === 'auto' ? dark : shoe, roughness:.7 });
   const feet = [-1,1].map(s => { const f = mesh(new THREE.SphereGeometry(.13,10,8), feetMat); f.scale.set(1,.6,1.3); f.position.set(s*.18,.07,.04); root.add(f); return f; });
+  bakeGroup(body, new Set([...arms, prop].filter(Boolean)));   // one mesh for the whole body = far fewer draw calls
   scene.add(root);
   return { root, pivot, body, arms, feet, bodyMat, prop, glove:null, pack:null, canopy:null };
 }
@@ -1742,6 +1786,7 @@ function buildGlimMesh(sp, shiny){
   for (const s of [-1,1]){ const e = mesh(new THREE.SphereGeometry(.045,8,6), eyeM); e.position.set(s*eyeX,eyeY,eyeZ); body.add(e);
     const hl = mesh(new THREE.SphereGeometry(.015,5,4), new THREE.MeshBasicMaterial({ color:0xffffff }), false); hl.position.set(s*eyeX+.012,eyeY+.015,eyeZ+.035); body.add(hl); }
   const acc = new THREE.Group(); body.add(acc);
+  bakeGroup(body, new Set([...ears, acc]));
   // No real lights on glimmlings: adding lights at runtime makes every material recompile (stutter). They glow instead.
   const light = { intensity:0 };
   scene.add(root);
@@ -1775,7 +1820,7 @@ function makeEgg(def){
   const sp = GLIMMDEX[(def.species === 'random' ? 1 : def.species)-1];
   const s = mesh(new THREE.SphereGeometry(.35,16,12), shiny ? glowMat('#ffd45c',.35,{ flatShading:false, metalness:.4, roughness:.3 }) : mat('#fff3dc',{ flatShading:false })); s.scale.set(.88,1.12,.88); e.mesh.add(s);
   for (let i=0;i<6;i++){ const d = mesh(new THREE.SphereGeometry(.08,6,5), mat(shiny ? '#fff4c0' : sp.color)); const a = rand(0,Math.PI*2), h = rand(-.2,.25); d.position.set(Math.cos(a)*.29, h, Math.sin(a)*.29); d.scale.set(1,.6,1); e.mesh.add(d); }
-  scene.add(e.mesh);
+  bakeGroup(e.mesh); scene.add(e.mesh);
   e.tag = document.createElement('div'); e.tag.className = 'ntag egg'; e.tag.hidden = true; $('#tags').appendChild(e.tag);
   return e;
 }
@@ -1837,6 +1882,7 @@ class NPC {
   constructor(def){
     this.def = def; this.id = def.id; this.name = def.name; this.pos = def.pos.clone(); this.yaw = def.yaw || 0; this.ph = rand(0,6);
     this.m = def.build ? def.build() : buildCritter(def.look); this.m.root.position.copy(this.pos); this.m.root.rotation.y = this.yaw; this.home = def.pos.clone(); this.target = null; this.hop = 0;
+    bakeGroup(this.m.body);
     const cr = def.colR || .45; this.cr = cr;
     this.col = def.solid !== false ? addCollider(this.pos.x-cr, this.pos.y, this.pos.z-cr, this.pos.x+cr, this.pos.y+1.1+cr, this.pos.z+cr, { dyn:true }) : null;
     world.npcs.push(this);
@@ -3215,8 +3261,10 @@ function buildCh1(L){
     tree(x,3,z,s,{ leaf:'#2f6a5a', leaf2:'#3f8a6a', trunk:'#4a3a3a', kind:Math.random() < .4 ? 'pine' : 'round' });
   for (let i=0;i<14;i++) shroom(rand(51,69),3,rand(-31,-16),rand(.9,2),pick(['#6ad0ff','#b88aff','#7affc8']),true);
   for (let i=0;i<10;i++) fern(rand(51,69),3,rand(-31,-16),rand(1,1.6));
-  L.amb = [];
-  for (let i=0;i<22;i++){ const a = dyn(mesh(new THREE.SphereGeometry(.06,5,4), glowMat('#fff27a',1), false, false)); a.userData.c = new V3(rand(51,69),rand(3.6,7),rand(-31,-16)); a.userData.ph = rand(0,6); world.deco.add(a); L.amb.push(a); }
+  // ambient fireflies: one points cloud instead of 22 meshes
+  { const n = 26, pos = new Float32Array(n*3), g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+    L.ambPts = new THREE.Points(g, new THREE.PointsMaterial({ color:0xfff27a, size:.22, transparent:true, opacity:.95, depthWrite:false })); L.ambPts.frustumCulled = false; scene.add(L.ambPts);
+    L.amb = Array.from({ length:n }, () => ({ c:new V3(rand(51,69),rand(3.6,7),rand(-31,-16)), ph:rand(0,6) })); }
   const stumpP = (x,z,top,w=1.5) => { addCollider(x-w/2,3,z-w/2,x+w/2,top,z+w/2);
     const s = mesh(new THREE.CylinderGeometry(w*.55,w*.62,top-3,9), mat('#6b4a36')); s.position.set(x,3+(top-3)/2,z); world.deco.add(s);
     const t = mesh(new THREE.CylinderGeometry(w*.55,w*.55,.06,9), mat('#c9a27a')); t.position.set(x,top+.01,z); world.deco.add(t); };
@@ -3372,7 +3420,7 @@ function buildCh1(L){
     [new V3(200,0,300), b => b.pos.z > 250 && b.pos.x >= 150],
     [new V3(-140,0,300), b => b.pos.z > 250 && b.pos.x <= -60],
   ];
-  cpDef.forEach(([p, test, home, cave]) => { const lan = makeLantern(p.x,p.y,cave ? p.z - 1.6 : p.z, false); world.cps.push({ spawn:cave ? new V3(p.x,p.y+.6,CAVE_Z) : new V3(p.x,p.y+.6,p.z-2), test, lan }); });
+  cpDef.forEach(([p, test, home, cave]) => { const lan = makeLantern(p.x,p.y,cave ? p.z - 1.6 : p.z, false, true); world.cps.push({ spawn:cave ? new V3(p.x,p.y+.6,CAVE_Z) : new V3(p.x,p.y+.6,p.z-2), test, lan }); });
   [[-6,0,-1.5],[19,0,-4.6],[29.5,4,-4.6]].forEach(([x,y,z]) => makeLantern(x,y,z));
   world.areas = [
     { name:'Glowroot Caves', sub:'Under Mossbottom', look:'cave', test:p => p.z > 250 && p.x > -20 && p.x < 130 },
@@ -3470,7 +3518,7 @@ function buildHollow(L){
   for (let i=0;i<30;i++){ const x = rand(196,237), z = rand(289,311); tuft(x, 0, z, g2); }
   // broken lanterns (one still holds a tiny warm candle)
   for (const [x,z,warm] of [[203,296,0],[212,302,1],[220,293,0],[220,308,0],[234,295,1],[234,305,0]]){
-    const lan = makeLantern(x,0,z); lan.g.rotation.z = rand(-.3,.3); if (warm){ lan.glow = 1; lan.target = 1; lan.keep = true; }
+    const lan = makeLantern(x,0,z,false,!!warm); lan.g.rotation.z = rand(-.3,.3); if (warm){ lan.glow = 1; lan.target = 1; lan.keep = true; }
   }
   L.hollow = { start:new V3(199.5,1,300), pedestal:new V3(231,0,300), gatePos:new V3(197.4,0,300) };
   const ped = mesh(new THREE.CylinderGeometry(.6,.8,1,8), mat(g3)); ped.position.set(231,.5,300); world.deco.add(ped); addCollider(230.4,0,299.4,231.6,1,300.6);
@@ -3490,13 +3538,12 @@ function buildMemory(L){
   addIsland(-146,-110,293,307,0,3,{ grass:'#6fae55' });
   for (let i=0;i<12;i++) tree(rand(-145,-111), 0, pick([rand(293.5,296),rand(304,306.5)]), rand(.8,1.2), { noCollide:true, kind:pick(['round','puff']) });
   scatter(-146,-110,293,307,0,60,(x,z) => Math.abs(z-300) < 1.6);
-  for (let x=-142; x<-112; x+=6){ const l = makeLantern(x,0,296.5); l.glow = 1; l.target = 1; l.keep = true; const l2 = makeLantern(x+3,0,303.5); l2.glow = 1; l2.target = 1; l2.keep = true; }
+  for (let x=-142; x<-112; x+=6){ const l = makeLantern(x,0,296.5,false,true); l.glow = 1; l.target = 1; l.keep = true; const l2 = makeLantern(x+3,0,303.5,false,true); l2.glow = 1; l2.target = 1; l2.keep = true; }
   const big = makeLantern(-114,0,300,true); big.glow = 1; big.glass.emissiveIntensity = 1.6; big.g.remove(big.light); dyn(big.g); L.memLantern = big;
   L.orbs = [-136,-127,-118].map((x,i) => { const o = dyn(mesh(new THREE.IcosahedronGeometry(.4,1), glowMat('#c9a2ff',1.2), false, false)); o.position.set(x,1.3,300); o.visible = i === 0; world.deco.add(o); return { o, x, done:false }; });
   // young Pemberton and Lyra
   L.youngPem = buildPemberton(); L.youngPem.g.scale.setScalar(.75); L.youngPem.g.position.set(-131,0,298.2); L.youngPem.g.rotation.y = .6; scene.add(L.youngPem.g);
-  L.lyra = buildPemberton(); L.lyra.g.scale.setScalar(.75); L.lyra.g.position.set(-129.6,0,298.2); L.lyra.g.rotation.y = -.4;
-  L.lyra.g.traverse(o => { if (o.isMesh && o.material.color && o.material.color.getHexString() === '8a6a52'){ o.material = mat('#c9c2ee',{ flatShading:false }); } if (o.isMesh && o.material.color && o.material.color.getHexString() === '4a5ab0'){ o.material = mat('#ff9eb5'); } });
+  L.lyra = buildPemberton({ body:'#c9c2ee', cap:'#ff9eb5' }); L.lyra.g.scale.setScalar(.75); L.lyra.g.position.set(-129.6,0,298.2); L.lyra.g.rotation.y = -.4;
   scene.add(L.lyra.g);
 }
 
@@ -4019,6 +4066,9 @@ LV = {
     for (let i=0;i<14;i++){ const p = mesh(new THREE.IcosahedronGeometry(rand(1.6,3.2),1), new THREE.MeshStandardMaterial({ color:0xb8b6d8, transparent:true, opacity:0, flatShading:true, depthWrite:false, emissive:0x50507a, emissiveIntensity:.4 }), false, false);
       p.position.set(rand(-6,6), rand(-2,6), rand(-4,3)); L.stille.add(p); }
     L.flyM = mesh(new THREE.SphereGeometry(.35,12,10), glowMat('#ffc65a',1.6), false, false); L.flyM.visible = false; scene.add(L.flyM);
+    // moving parts that move as a whole become one mesh each
+    [L.bridge.piv, L.windmill.rotor, L.vanes, L.cave.pin, L.cave.gate, L.hollow.gate, L.bell, L.lantern.g, L.memLantern.g, ...L.hideSpots.map(h => h.g)].forEach(g => g && bakeGroup(g));
+    bakeGroup(Raft.g, new Set([Raft.sail]));
     buildGrid(); mergeStatic();
     // portraits for the dialogue box (rendered once)
     const P = (sp, obj, o) => { const img = Portraits.make(obj, o); if (img) SPEAKERS[sp].img = img; };
@@ -4228,7 +4278,7 @@ LV = {
     }
     Hide.update(dt);
     for (const p of L.pages) if (!state.pages[p.id]){ p.m.rotation.y += dt*1.5; p.m.position.y = p.pos.y + Math.sin(t*2)*.1; }
-    for (const a of L.amb){ const u = a.userData; u.ph += dt; a.position.set(u.c.x + Math.cos(u.ph*.7)*.8, u.c.y + Math.sin(u.ph)*.4, u.c.z + Math.sin(u.ph*.5)*.8); }
+    { const arr = L.ambPts.geometry.attributes.position.array; L.amb.forEach((u,i) => { u.ph += dt; arr[i*3] = u.c.x + Math.cos(u.ph*.7)*.8; arr[i*3+1] = u.c.y + Math.sin(u.ph)*.4; arr[i*3+2] = u.c.z + Math.sin(u.ph*.5)*.8; }); L.ambPts.geometry.attributes.position.needsUpdate = true; }
     for (const s of world.spin) s.rotation.y += dt*1.5;
     // the twins run around the square
     for (const k of L.kids){ if (!k.m.root.visible || Hide.active) continue; k.hop -= dt;
@@ -4706,9 +4756,9 @@ function updateNetPill(){
 }
 
 /* ================= UI: HUD, menus, journal, workshop, touch, loop, boot ================= */
-function buildPemberton(){
+function buildPemberton(c = {}){
   const g = new THREE.Group();
-  const body = mesh(new THREE.SphereGeometry(.55,16,12), mat('#8a6a52',{ flatShading:false })); body.scale.set(1,1.1,.95); body.position.y = .6; g.add(body);
+  const body = mesh(new THREE.SphereGeometry(.55,16,12), mat(c.body || '#8a6a52',{ flatShading:false })); body.scale.set(1,1.1,.95); body.position.y = .6; g.add(body);
   const belly = mesh(new THREE.SphereGeometry(.4,14,10), mat('#d8c3a2',{ flatShading:false })); belly.scale.set(1,1.05,.5); belly.position.set(0,.5,.3); g.add(belly);
   const eyes = [];
   for (const s of [-1,1]){
@@ -4719,8 +4769,9 @@ function buildPemberton(){
     const wi = mesh(new THREE.SphereGeometry(.22,8,6), mat('#7a5a44')); wi.scale.set(.4,1,.8); wi.position.set(s*.52,.55,0); g.add(wi);
   }
   const beak = mesh(new THREE.ConeGeometry(.07,.18,4), mat('#ff9a3c')); beak.rotation.x = Math.PI/2; beak.position.set(0,.66,.55); g.add(beak);
-  const cap = mesh(new THREE.ConeGeometry(.3,.65,8), mat('#4a5ab0')); cap.position.set(.08,1.32,-.05); cap.rotation.z = -.35; g.add(cap);
+  const cap = mesh(new THREE.ConeGeometry(.3,.65,8), mat(c.cap || '#4a5ab0')); cap.position.set(.08,1.32,-.05); cap.rotation.z = -.35; g.add(cap);
   const pom = mesh(new THREE.SphereGeometry(.09,6,5), mat('#fff4e3')); pom.position.set(.24,1.62,-.05); g.add(pom);
+  bakeGroup(g, new Set(eyes));
   return { g, eyes };
 }
 
@@ -5149,6 +5200,7 @@ function frame(now){
   // every part runs on its own: one failing piece can never freeze the picture again
   safe(() => tick(now));
   safe(() => { updateVisuals(lastDt); Cam.update(lastDt); });
+  safe(syncGems);
   safe(() => { renderer.shadowMap.needsUpdate = coarse ? frameNo % 3 === 0 : (Perf.fps > 50 || (frameNo & 1) === 0); Post.render(); });
   safe(updateTags);
 }
@@ -5181,6 +5233,9 @@ function tick(now){
     d.style.cssText = `--x:${rand(2,98)}%;--d:${rand(16,30)}s;--dl:${-rand(0,30)}s;--s:${rand(.55,1.25)};--sw:${rand(-40,40)}px`; host.appendChild(d); } })();
 Post.init();
 LV.build();
+// Compile every shader now (hidden things too), so nothing hitches the first time it appears
+(function precompile(){ const hidden = []; scene.traverse(o => { if (!o.visible){ hidden.push(o); o.visible = true; } });
+  try { renderer.compile(scene, camera); if (Post.ok) renderer.compile(Post.scene, Post.cam); } catch(e){} hidden.forEach(o => o.visible = false); })();
 applyUiScale(); applyTouchMode(); applyTouchLayout(); document.body.classList.toggle('notags', !Settings.d.tags);
 applyLook('day');
 $('#verLine').textContent = `Version ${GAME_VERSION} · co-op for two`;
