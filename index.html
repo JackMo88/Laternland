@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#121634">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -13,6 +13,7 @@
 </head>
 <body>
 <title>Lanternland</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito:wght@600;700;800;900&display=swap">
@@ -38,6 +39,9 @@
 html{font-size:calc(16px * var(--ui))}
 [hidden]{display:none!important}
 *,*::before,*::after{box-sizing:border-box}
+html,body{touch-action:none;overscroll-behavior:none;-webkit-text-size-adjust:100%}
+button,input,.overlay,.sheet,.wsbody{touch-action:manipulation}
+.wsbody,.overlay{touch-action:pan-y}
 html,body{height:100%;margin:0;overflow:hidden;background:var(--night);color:var(--ink);font-family:var(--f-body);-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 button,input,select{font:inherit;color:inherit}
 button{cursor:pointer}
@@ -4971,6 +4975,11 @@ $$('#touch .tzone').forEach(z => {
 })();
 
 ['pointerdown','touchend','click','keydown'].forEach(ev => addEventListener(ev, () => Sfx.unlock(), { capture:true, passive:true }));
+// Phones: a double tap or pinch must never zoom the page (that shifted the camera and broke the controls)
+['gesturestart','gesturechange','dblclick'].forEach(ev => addEventListener(ev, e => e.preventDefault(), { passive:false }));
+(() => { let lastT = 0; addEventListener('touchend', e => { const now = Date.now(), t = e.target;
+  if (now - lastT < 350 && (t === canvas || t === document.body || (t.closest && t.closest('#touch,#tags,#hud .quest')))) e.preventDefault(); lastT = now; }, { passive:false }); })();
+addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive:false });
 /* ---------- Keyboard ---------- */
 addEventListener('keydown', e => {
   Sfx.init();
