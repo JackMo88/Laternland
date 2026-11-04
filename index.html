@@ -860,6 +860,16 @@ const Sfx = {
       this.apply();
     } catch(e){}
   },
+  // Phones: the audio must be (re)started inside a tap, and iPhones need a 'playback' session or the mute switch silences everything
+  unlock(){
+    this.init(); const c = this.ctx; if (!c) return;
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}
+    if (c.state !== 'running') c.resume().catch(() => {});
+    if (!this.unlocked){ this.unlocked = true;
+      try { const b = c.createBuffer(1, 1, 22050), src = c.createBufferSource(); src.buffer = b; src.connect(c.destination); src.start(0); } catch(e){}
+      try { const el = document.createElement('audio'); el.setAttribute('playsinline',''); el.loop = true;
+        el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA='; el.volume = .01; el.play().catch(() => {}); } catch(e){} }
+  },
   apply(){ if (!this.ctx) return; this.master.gain.value = Settings.d.volume; this.music.gain.value = Settings.d.music * 1.6; },
   tone(f, d=.12, type='sine', vol=.1, slide=0, delay=0, bus){
     const c = this.ctx; if (!c) return;
@@ -902,6 +912,11 @@ const Music = {
     cave:  { prog:[[220,262,330],[196,247,294],[175,220,262],[165,196,247]], wave:'sine', beat:.62 },
     hush:  { prog:[[220,262,311],[208,247,294],[196,233,294],[185,220,277]], wave:'sine', beat:.8 },
     memory:{ prog:[[262,330,392],[294,349,440],[247,311,370],[262,330,392]], wave:'square', beat:.34 },
+    village:{ prog:[[294,370,440],[247,294,370],[262,330,392],[220,277,330]], wave:'triangle', beat:.36 },
+    grove:  { prog:[[220,277,330],[247,294,370],[196,247,294],[220,262,330]], wave:'sine', beat:.55 },
+    tower:  { prog:[[330,415,494],[294,370,440],[262,330,392],[294,370,440]], wave:'triangle', beat:.3 },
+    grumble:{ prog:[[147,175,220],[131,165,196],[147,185,220],[165,196,247]], wave:'sawtooth', beat:.4 },
+    pond:   { prog:[[262,330,392],[220,262,330],[247,294,370],[196,247,294]], wave:'sine', beat:.42 },
   },
   update(dt, bright){
     if (!Sfx.ctx || Settings.d.music <= 0) return;
@@ -909,7 +924,7 @@ const Music = {
     const th = this.themes[this.theme] || this.themes.day;
     this.t = th.beat;
     const bar = Math.floor(this.step/8) % 4, ch = th.prog[bar], i = this.step % 8;
-    const pat = [0,1,2,1,0,2,1,2], vol = th.wave === 'square' ? .03 : .07;
+    const pat = [0,1,2,1,0,2,1,2], vol = th.wave === 'square' ? .03 : th.wave === 'sawtooth' ? .025 : .07;
     if (i !== 3 && i !== 7) Sfx.tone(ch[pat[i]]*2*(bright && i===6 && this.theme === 'day' ? 2 : 1), th.wave === 'square' ? .22 : .9, th.wave, vol, 0, 0, Sfx.music);
     if (i === 0) Sfx.tone(ch[0]/2, 2.6, 'sine', this.theme === 'hush' ? .05 : .07, 0, 0, Sfx.music);
     if (Math.random() < .12) Sfx.tone(ch[2]*4, .6, 'sine', .03, 0, .2, Sfx.music);
@@ -4812,6 +4827,7 @@ $$('#touch .tzone').forEach(z => {
   $('#teReset').addEventListener('click', () => { Settings.d.touchLayout = null; Settings.save(); applyTouchLayout(); const L = touchLayout(); $('#teSs').value = L.ss; $('#teBs').value = L.bs; });
 })();
 
+['pointerdown','touchend','click','keydown'].forEach(ev => addEventListener(ev, () => Sfx.unlock(), { capture:true, passive:true }));
 /* ---------- Keyboard ---------- */
 addEventListener('keydown', e => {
   Sfx.init();
@@ -4907,6 +4923,8 @@ function checkArea(instant){
   if (a.name !== areaNow){ const first = !state.flags['area_' + a.name]; areaNow = a.name; $('#areaName').textContent = a.name;
     if (first){ state.flags['area_' + a.name] = true; banner(a.name, a.sub); } }
   if (a.look && a.look !== lookNow && (instant || !Post.wipeDir)) applyLook(a.look);
+  const AM = { 'Mossbottom':'village', 'Firefly Grove':'grove', 'Windspire':'tower', 'Grumblewood':'grumble', 'Puddle Pond':'pond', 'Wobble Arena':'village' };
+  if (a.look === 'day') Music.theme = AM[a.name] || 'day';
 }
 function updateHUD(dt){
   const o = LV.objective();
