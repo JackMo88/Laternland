@@ -159,6 +159,13 @@ body.touch #toast{bottom:auto;top:calc(env(safe-area-inset-top,0px) + 7.6rem)}
 .opt[disabled]{opacity:.4;cursor:not-allowed}
 .vote{font-size:.78rem;color:var(--ink-faint);font-weight:800}
 
+/* small talk: lower and slimmer, the other player keeps playing */
+#dialog.small{width:min(46rem,calc(100vw - 1.5rem));padding:.8rem 1rem .6rem}
+#dialog.small .portrait{width:3.8rem;height:3.8rem}
+#talkpill{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 1rem);z-index:6;padding:.5rem .9rem;font-weight:800;font-size:.85rem;color:var(--ink-dim);max-width:calc(100vw - 2rem);pointer-events:none}
+body.touch #talkpill{bottom:auto;top:calc(env(safe-area-inset-top,0px) + 6rem)}
+#dice.mini{background:transparent;backdrop-filter:none;pointer-events:none;place-items:start center}
+#dice.mini .sheet{pointer-events:auto;transform:scale(.78);transform-origin:top center}
 /* ---------- Overlays ---------- */
 .overlay{position:fixed;inset:0;display:grid;place-items:center;background:rgba(8,6,26,.62);backdrop-filter:blur(3px);z-index:60;overflow:auto;
   padding-left:max(1rem,env(safe-area-inset-left,0px));padding-right:max(1rem,env(safe-area-inset-right,0px));padding-block:calc(env(safe-area-inset-top,0px) + 1rem) calc(env(safe-area-inset-bottom,0px) + 1rem)}
@@ -667,6 +674,7 @@ body.touch #netpill{top:auto;left:50%;right:auto;transform:translateX(-50%);bott
   </div>
 </section>
 <div id="netpill" hidden></div>
+<div id="talkpill" class="plaque" hidden></div>
 
 <section id="confirmNew" class="overlay" hidden>
   <div class="sheet plaque">
@@ -855,8 +863,9 @@ const Sfx = {
     if (this.ctx) return;
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-      this.master = this.ctx.createGain(); this.master.connect(this.ctx.destination);
-      this.music = this.ctx.createGain(); this.music.connect(this.ctx.destination);
+      const comp = this.ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.connect(this.ctx.destination);   // no crackling when many sounds overlap
+      this.master = this.ctx.createGain(); this.master.connect(comp);
+      this.music = this.ctx.createGain(); this.music.connect(comp);
       this.apply();
     } catch(e){}
   },
@@ -870,9 +879,11 @@ const Sfx = {
       try { const el = document.createElement('audio'); el.setAttribute('playsinline',''); el.loop = true;
         el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA='; el.volume = .01; el.play().catch(() => {}); } catch(e){} }
   },
-  apply(){ if (!this.ctx) return; this.master.gain.value = Settings.d.volume; this.music.gain.value = Settings.d.music * 1.6; },
+  apply(){ if (!this.ctx) return; this.master.gain.value = Settings.d.volume; this.music.gain.value = Settings.d.music * 1.25; },
   tone(f, d=.12, type='sine', vol=.1, slide=0, delay=0, bus){
-    const c = this.ctx; if (!c) return;
+    const c = this.ctx; if (!c || c.state !== 'running') return;
+    if ((this.voices || 0) > 26) return;   // phones choke on too many sounds at once
+    this.voices = (this.voices || 0) + 1; setTimeout(() => this.voices--, (d + delay)*1000 + 60);
     const t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
     o.type = type; o.frequency.setValueAtTime(f, t);
     if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, f+slide), t+d);
@@ -974,6 +985,7 @@ function pollInput(){
   if (Net.role === 'local'){ applyP(Input.P[0], r0); applyP(Input.P[1], r1); return; }
   const me = mergeRaw(r0, r1); Input.me = me;
   if (Net.role === 'solo'){ soloTick(me); applyP(Input.P[Net.active], me); applyP(Input.P[1 - Net.active], Net.ai || EMPTY_RAW); return; }
+  if (Input.block) Object.assign(me, { mx:0, mz:0, h:{} });   // own Funki waits while a menu is open online
   if (Net.role === 'host'){ applyP(Input.P[0], me); Online.remote ? applyRemote(Input.P[1], Online.remote) : applyP(Input.P[1], EMPTY_RAW); return; }
   if (Net.role === 'guest'){ applyP(Input.P[0], EMPTY_RAW); applyP(Input.P[1], me); guestSendInput(); }
 }
@@ -1438,7 +1450,7 @@ const Cam = {
       const shift = innerWidth > 760 ? 3.2 : 0;
       this.tgt.set(c.x - Math.cos(th)*shift, c.y + (innerWidth > 760 ? 0 : -1.2), c.z + Math.sin(th)*shift);
       camera.lookAt(this.tgt);
-    } else if (mode === 'workshop'){
+    } else if (mode === 'workshop' || Online.ws){
       const f = funkis[wsPlayer] || funkis[0], narrow = innerWidth < 760;
       const tg = T2.set(f.pos.x + (narrow ? 0 : .8), f.pos.y + (narrow ? -.4 : .2), f.pos.z);
       this.tgt.lerp(tg, 1 - Math.exp(-6*dt));
@@ -1889,7 +1901,7 @@ function setMode(m){
   mode = m;
   document.body.classList.toggle('playing', m === 'play' || m === 'dialog');
   document.body.classList.toggle('talking', m === 'dialog');
-  if (m === 'play' && Dialog.pending.length){ const p = Dialog.pending.shift(); setTimeout(() => Dialog.start(p.lines, p.onEnd), 50); }
+  if (m === 'play' && Dialog.pending.length && !Dialog.active){ const p = Dialog.pending.shift(); setTimeout(() => Dialog.start(p.lines, p.onEnd, p.o), 50); }
 }
 function setFlag(k, v=true){ if (Net.role === 'guest') return; if (state.flags[k] === v) return; state.flags[k] = v; persist(); }
 function persist(){
@@ -1969,21 +1981,46 @@ function banner(title, eyebrow=''){
    A line is { s:speaker, text, choice?, pre?, cont?, run? }.
    choice = { type:'menu' | 'vote', options:[{ id, label, sub, tag, tagc, seen, disabled, check }], onPick(id, info, picker) }
    onPick may return more lines, or { check:{ stat, dc, title }, ok:fn, fail:fn } to roll a d20 first. */
+/* Two kinds of conversation:
+   - big story moments (default): everyone sees them, the game waits (mode 'dialog')
+   - small talk (o.who = the player who started it): only that Funki stands still, the other keeps playing
+     and can walk over and press Grab to join in, like in Baldur's Gate. */
 const Dialog = {
   queue:[], cur:null, onEnd:[], shown:0, full:'', choice:null, picks:[null,null], sel:[0,0], pending:[], lock:0,
-  start(lines, onEnd){
+  active:false, small:false, who:[0,1], owner:0,
+  start(lines, onEnd, o = {}){
     if (Net.role === 'guest') return;
-    if (mode === 'dialog'){ this.queue.push(...lines); if (onEnd) this.onEnd.push(onEnd); return; }
-    if (mode !== 'play'){ this.pending.push({ lines, onEnd }); return; }
-    this.queue = lines.slice(); this.onEnd = onEnd ? [onEnd] : []; this.cur = null; this.lock = .3; setMode('dialog'); $('#dialog').hidden = false; this.next();
+    const small = o.who !== undefined && o.who !== null;
+    if (this.active){ this.queue.push(...lines); if (onEnd) this.onEnd.push(onEnd); if (!small && this.small) this.makeBig(); return; }
+    if (mode !== 'play'){ this.pending.push({ lines, onEnd, o }); return; }
+    this.queue = lines.slice(); this.onEnd = onEnd ? [onEnd] : []; this.cur = null; this.lock = .3; this.active = true;
+    this.small = small; this.who = small ? [o.who] : [0,1]; this.owner = small ? o.who : 0;
+    $('#dialog').classList.toggle('small', small);
+    if (!small) setMode('dialog');
+    this.showBox(); this.next();
+  },
+  // On a shared screen everyone sees the box; online, a device only shows it when its own Funki takes part
+  here(){ return Net.role === 'host' ? this.who.includes(0) : true; },
+  showBox(){ const vis = this.active && this.here(); $('#dialog').hidden = !vis; document.body.classList.toggle('chatting', this.active && this.small && vis);
+    const tp = $('#talkpill'); tp.hidden = !this.active || vis; if (!tp.hidden && this.cur){ const sp = SPEAKERS[this.cur.s] || { name:this.cur.s }; tp.textContent = `${nm(this.owner)} is talking with ${sp.name}. Walk over and press Grab to join.`; } },
+  makeBig(){ this.small = false; this.who = [0,1]; $('#dialog').classList.remove('small'); setMode('dialog'); this.showBox(); if (this.choice && this.shown >= this.full.length) this.renderChoice(); },
+  joinable(f){ return this.active && this.small && !this.who.includes(f.idx) && !f.dead && funkis[this.owner] && f.pos.distanceTo(funkis[this.owner].pos) < 6; },
+  join(i){ if (!this.joinable(funkis[i])) return; this.who.push(i); this.who.sort(); Sfx.ding(); hearts(funkis[i].pos, 3); this.showBox(); if (this.choice && this.shown >= this.full.length){ this.picks = [null,null]; this.renderChoice(); } },
+  end(){
+    $('#dialog').hidden = true; $('#talkpill').hidden = true; document.body.classList.remove('chatting');
+    const cbs = this.onEnd, wasSmall = this.small; this.onEnd = []; this.active = false; this.small = false; this.cur = null; this.choice = null;
+    if (!wasSmall) setMode('play');
+    else if (this.pending.length && mode === 'play'){ const p = this.pending.shift(); setTimeout(() => Dialog.start(p.lines, p.onEnd, p.o), 50); }
+    cbs.forEach(cb => cb());
   },
   next(){
     const prev = this.cur; this.cur = null;
     if (prev && prev.cont){ const more = prev.cont(); prev.cont = null; if (more && more.length) this.queue.unshift(...more); }
     const l = this.queue.shift();
-    if (!l){ $('#dialog').hidden = true; const cbs = this.onEnd; this.onEnd = []; setMode('play'); cbs.forEach(cb => cb()); return; }
-    if (l.run){ l.run(); if (l.cont){ const m = l.cont(); if (m && m.length) this.queue.unshift(...m); } if (mode === 'dialog') this.next(); return; }
+    if (!l){ this.end(); return; }
+    if (l.run){ l.run(); if (l.cont){ const m = l.cont(); if (m && m.length) this.queue.unshift(...m); } if (this.active) this.next(); return; }
     if (l.pre) l.pre();
+    if (!this.active) return;
     this.cur = l; this.lock = Math.max(this.lock || 0, .12);
     const sp = SPEAKERS[l.s || 'pemberton'] || { name:l.s };
     $('#dSpeaker').textContent = typeof sp.name === 'function' ? sp.name() : sp.name; portraitOf($('#dPortrait'), sp);
@@ -1993,9 +2030,11 @@ const Dialog = {
     this.full = typeof l.text === 'function' ? l.text() : l.text; this.shown = 0; $('#dText').textContent = '';
     this.choice = l.choice || null; $('#dChoice').hidden = true; $('#dChoice').innerHTML = ''; $('#dNext').hidden = !!this.choice;
     if (this.choice){ this.picks = [null,null]; const fe = Math.max(0, this.choice.options.findIndex(o => !o.disabled)); this.sel = [fe,fe]; }
+    this.showBox();
   },
   insert(lines){ this.queue.unshift(...lines); },
-  isVote(){ return this.choice && this.choice.type === 'vote' && Net.role !== 'solo'; },
+  isVote(){ return this.choice && this.choice.type === 'vote' && Net.role !== 'solo' && this.who.length === 2; },
+  picker(){ return Net.role === 'solo' ? Net.active : this.who.includes(0) ? 0 : this.who[0]; },
   renderChoice(){
     const c = this.choice, box = $('#dChoice'); box.hidden = false; box.innerHTML = '';
     const vote = this.isVote(), rows = vote ? [0,1] : [null];
@@ -2008,7 +2047,7 @@ const Dialog = {
         b.className = 'opt' + (selected ? ' sel' : '') + (i !== null && this.picks[i] === j ? ' locked' : '') + (o.seen ? ' seen' : '');
         b.disabled = !!o.disabled;
         b.innerHTML = `<span class="onum">${j+1}</span><span class="otext">${o.tag ? `<span class="ctag" style="--tc:${o.tagc || '#ffc65a'}">${esc(o.tag)}</span>` : ''}${esc(o.label)}${o.sub ? `<small>${esc(o.sub)}</small>` : ''}</span>`;
-        b.addEventListener('click', e => { e.stopPropagation(); this.pick(i === null ? (Net.role === 'guest' ? 1 : 0) : i, j); });
+        b.addEventListener('click', e => { e.stopPropagation(); this.pick(i === null ? this.picker() : i, j); });
         row.appendChild(b);
       });
       box.appendChild(row);
@@ -2032,33 +2071,35 @@ const Dialog = {
     }
   },
   update(dt){
+    if (!this.active || Dice.o) return;
     if (this.shown < this.full.length){
       this.shown = Math.min(this.full.length, this.shown + dt*60*Settings.d.text);
       $('#dText').textContent = this.full.slice(0, Math.floor(this.shown));
       if (this.shown >= this.full.length && this.choice) this.renderChoice();
     }
     if (this.lock > 0){ this.lock -= dt; return; }
-    const P = Input.P;
+    const P = Input.P, who = this.who;
     if (this.choice && this.shown >= this.full.length){
       const vote = this.isVote(), n = this.choice.options.length;
       P.forEach((p, i) => {
+        if (!who.includes(i)) return;
         const k = vote ? i : 0;
         if (vote && this.picks[i] !== null) return;
         const step = d => { let s = this.sel[k]; for (let t=0;t<n;t++){ s = (s + d + n) % n; if (!this.choice.options[s].disabled) break; } this.sel[k] = s; if (!vote) this.sel[1] = s; this.renderChoice(); };
         if (p.pr.left || p.pr.up) step(-1);
         if (p.pr.right || p.pr.down) step(1);
-        if (p.pr.power || p.pr.jump || p.pr.grab) this.pick(i, this.sel[k]);
+        if (this.choice && (p.pr.power || p.pr.jump || p.pr.grab)) this.pick(i, this.sel[k]);
       });
-    } else if (P.some(p => p.pr.jump || p.pr.power || p.pr.grab)) this.advance();
+    } else if (who.some(i => P[i] && (P[i].pr.jump || P[i].pr.power || P[i].pr.grab))) this.advance();
   },
   advance(){
-    if (this.lock > 0) return;
+    if (this.lock > 0 || !this.active) return;
     if (this.shown < this.full.length){ this.shown = this.full.length; $('#dText').textContent = this.full; if (this.choice) this.renderChoice(); return; }
     if (!this.choice) this.next();
   },
-  number(n){ if (!this.choice || this.shown < this.full.length || this.lock > 0 || this.isVote()) return; if (n < this.choice.options.length) this.pick(0, n); },
+  number(n){ if (!this.choice || this.shown < this.full.length || this.lock > 0 || this.isVote()) return; if (n < this.choice.options.length) this.pick(this.picker(), n); },
 };
-$('#dialog').addEventListener('click', () => { if (mode === 'dialog') Dialog.advance(); else if (Net.role === 'guest') Online.tapJump = true; });
+$('#dialog').addEventListener('click', () => { if (Dialog.active) Dialog.advance(); else if (Net.role === 'guest') Online.tapJump = true; });
 
 /* ---------- Dialogue trees (data) ----------
    DLG[id] = { s:'default speaker', start:'a', nodes:{ a:{ s, t, next | choices | end, do, vote } } }
@@ -2105,19 +2146,20 @@ function makeChoice(id, nid, n){
       return c.go ? nodeLines(id, c.go) : [];
     } };
 }
-function runDlg(id, at, onEnd){ const D = DLG[id]; if (!D) return; const st = at || (typeof D.start === 'function' ? D.start() : D.start) || 'a'; const lines = nodeLines(id, st); if (lines.length) Dialog.start(lines, onEnd); }
+function runDlg(id, at, onEnd, o){ const D = DLG[id]; if (!D) return; const st = at || (typeof D.start === 'function' ? D.start() : D.start) || 'a'; const lines = nodeLines(id, st); if (lines.length) Dialog.start(lines, onEnd, o); }
 
 /* ---------- d20 ---------- */
 const Dice = {
   t:0, res:null, o:null, prev:'play', done:false,
   start(o){
     if (Net.role === 'guest') return;
-    this.o = o; this.prev = mode; this.t = 0; this.done = false;
+    this.o = o; this.t = 0; this.done = false; this.small = Dialog.small;
+    if (!this.small) this.prev = mode;
     const roll = 1 + Math.floor(Math.random()*20), bonus = o.bonus || 0, total = roll + bonus;
     this.res = { roll, bonus, total, ok: o.check ? (roll === 20 || (roll !== 1 && total >= o.dc)) : true };
     $('#diceKind').textContent = o.kind || 'Skill check'; $('#diceTitle').textContent = o.title;
     $('#diceInfo').textContent = o.info || ''; $('#diceRes').textContent = ''; $('#diceRes').className = '';
-    $('#diceHint').hidden = true; $('#d20').classList.add('roll'); $('#dice').hidden = false; mode = 'dice';
+    $('#diceHint').hidden = true; $('#d20').classList.add('roll'); $('#dice').classList.toggle('mini', this.small); $('#dice').hidden = this.small && !Dialog.here(); if (!this.small) mode = 'dice';
   },
   update(dt){
     this.t += dt;
@@ -2132,9 +2174,10 @@ const Dice = {
       $('#diceHint').hidden = false;
       return;
     }
-    if (this.t > 1.6 && Input.P.some(p => p.pr.jump || p.pr.power || p.pr.grab)) this.close();
+    if (this.t > 1.6 && Input.P.some((p, i) => (!this.small || Dialog.who.includes(i)) && (p.pr.jump || p.pr.power || p.pr.grab))) this.close();
+    if (this.small && this.t > 4) this.close();
   },
-  close(){ if (!this.done) return; $('#dice').hidden = true; mode = this.prev; if (mode === 'play') setMode('play'); const cb = this.o.onDone; this.o = null; cb && cb(this.res); },
+  close(){ if (!this.done || !this.o) return; $('#dice').hidden = true; if (!this.small){ mode = this.prev; if (mode === 'play') setMode('play'); } this.small = false; const cb = this.o.onDone; this.o = null; cb && cb(this.res); },
 };
 $('#dice').addEventListener('click', () => { if (Dice.done && Dice.t > .5) Dice.close(); });
 
@@ -2277,7 +2320,8 @@ function doGrab(f, p){
       h.launchT = h.launchTotal = .3; h.tumble = true; h.thrownBy = f;
       h.isGlim ? Sfx.squeak() : Sfx.toss();
     } else {
-      h.pos.set(f.pos.x + f.face.x*.85, f.pos.y + .3, f.pos.z + f.face.z*.85);
+      const tx = f.pos.x + f.face.x*.8, tz = f.pos.z + f.face.z*.8, ok = groundAhead(tx, tz, f.pos.y - .45);
+      h.pos.set(ok ? tx : f.pos.x, f.pos.y + (ok ? .3 : .9), ok ? tz : f.pos.z);
       h.vel.set(f.face.x*.6, 1, f.face.z*.6); Sfx.land();
     }
     return;
@@ -2472,7 +2516,9 @@ function control(f, p, dt){
     return;
   }
   if (f.heldBy){ if (p.pr.jump){ release(f.heldBy); f.vel.set(0,6,0); } f.glideClamp = false; return; }
-  if (LV.capture && LV.capture(f, p, dt)) return;   // minigames (fishing) can take over a player's buttons
+  if (LV.capture && LV.capture(f, p, dt)) return;
+  if (Dialog.small && Dialog.who.includes(f.idx)){ f.vel.x *= .8; f.vel.z *= .8; f.glideClamp = false; return; }   // in a conversation: stand still
+  if (p.pr.grab && Dialog.joinable(f) && (Net.role !== 'solo' || f.idx === Net.active)){ Dialog.join(f.idx); return; }   // minigames (fishing) can take over a player's buttons
   const [mx, mz] = toWorld(p);
   if (f.ropeRide){ rideRope(f, { ...p, mx }, dt); return; }
   if (f.launchT > 0){ f.launchT -= dt; if (f.onGround && f.launchT < f.launchTotal - .15){ f.launchT = 0; f.vel.x *= .2; f.vel.z *= .2; } }
@@ -3014,14 +3060,14 @@ function buildCh1(L){
   // Heart Tree: every big shared decision grows a glowing fruit
   tree(-4.6,0,-3.6,1.55,{ kind:'puff', leaf:'#d87aa8', leaf2:'#f0a0c8', trunk:'#7a4a3a' });
   L.fruits = dyn(new THREE.Group()); L.fruits.position.set(-4.6,0,-3.6); world.deco.add(L.fruits);
-  world.interact.push({ pos:new V3(-4.6,0,-3.6), r:2.6, label:'Heart Tree', use:() => {
+  world.interact.push({ pos:new V3(-4.6,0,-3.6), r:2.6, label:'Heart Tree', use:f => {
     const d = state.decisions, parts = [];
     if (d.glimmling) parts.push(d.glimmling === 'gentle' || d.glimmling === 'sanft' ? 'a pink fruit for your gentle Glimmling' : 'an orange fruit for your brave Glimmling');
     if (d.kiesel) parts.push({ cake:'a brown one for Pebble\'s cake', talked:'a grey one for talking Pebble round', brave:'a red one for walking past Pebble', riddle:'a violet one for Pebble\'s riddle', sleep:'a blue one for Pebble\'s nap' }[d.kiesel] || 'one for Pebble');
     if (d.rumpel) parts.push(d.rumpel === 'dorf' ? 'a golden one for Rumble in the village' : 'a green one for Rumble in Grumblewood');
     if (d.brooch) parts.push(d.brooch === 'kind' ? 'a silver one for the mouse who kept a button' : 'a silver one for Elsa\'s brooch');
     if (d.hush) parts.push({ invite:'a pale one that hums, for inviting the Hush', promise:'a pale one that hums, for your promise to the Hush', name:'a pale one that hums, for remembering who the Hush was' }[d.hush]);
-    Dialog.start([{ s:'sign', text: parts.length ? `The Heart Tree is carrying ${parts.join(', ')}. Every choice you make together keeps growing here.` : 'The Heart Tree is waiting. Every big choice you make together will grow here as a glowing fruit.' }]); } });
+    Dialog.start([{ s:'sign', text: parts.length ? `The Heart Tree is carrying ${parts.join(', ')}. Every choice you make together keeps growing here.` : 'The Heart Tree is waiting. Every big choice you make together will grow here as a glowing fruit.' }], null, { who:f.idx }); } });
   // Glimmling meadow
   fence(-6.6,1.8,-6.6,5.6,0); fence(-6.6,5.6,-2.6,5.6,0); fence(-2.6,5.6,-2.6,3.4,0); fence(-6.6,1.8,-4.4,1.8,0);
   L.meadow = { x0:-6,x1:-3.2,z0:2.3,z1:5, y:.4, c:new V3(-4.6,.4,3.6) };
@@ -3046,12 +3092,12 @@ function buildCh1(L){
   for (const s of [-1,1]){ const sd = mesh(new THREE.BoxGeometry(.1,1.55,.6), mat('#7a5a3c')); sd.position.set(s*.95,.78,0); shelf.add(sd); }
   L.trophies = dyn(new THREE.Group()); shelf.add(L.trophies);
   addCollider(-2.6,0,-5.7,-.6,1.5,-5.1);
-  world.interact.push({ pos:new V3(-1.6,0,-4.7), r:1.8, label:'Trophies', use:() => { const T = state.trophies, a = T.sumo[0]+T.bake[0]+T.fish[0], b = T.sumo[1]+T.bake[1]+T.fish[1];
-    Dialog.start([{ s:'sign', text:`Wobble Sumo ${T.sumo[0]}:${T.sumo[1]} · Bake-Off ${T.bake[0]}:${T.bake[1]} · Fishing ${T.fish[0]}:${T.fish[1]} · Firefly record ${state.fireRecord}. ${a === b ? 'A perfect tie. That calls for a rematch.' : (a > b ? n1() : n2()) + ' is ahead. For now.'}` }]); } });
+  world.interact.push({ pos:new V3(-1.6,0,-4.7), r:1.8, label:'Trophies', use:f => { const T = state.trophies, a = T.sumo[0]+T.bake[0]+T.fish[0], b = T.sumo[1]+T.bake[1]+T.fish[1];
+    Dialog.start([{ s:'sign', text:`Wobble Sumo ${T.sumo[0]}:${T.sumo[1]} · Bake-Off ${T.bake[0]}:${T.bake[1]} · Fishing ${T.fish[0]}:${T.fish[1]} · Firefly record ${state.fireRecord}. ${a === b ? 'A perfect tie. That calls for a rematch.' : (a > b ? n1() : n2()) + ' is ahead. For now.'}` }], null, { who:f.idx }); } });
   // Pemberton
   L.owl = buildPemberton(); L.owl.g.position.set(3,.8,-3.8); L.owl.g.rotation.y = .5; scene.add(L.owl.g);
   L.owlNpc = { id:'pemberton', pos:new V3(3,.8,-3.8) };
-  world.interact.push({ get pos(){ return L.owlNpc.pos; }, r:2.2, label:'Talk', use:() => runDlg('pemberton') });
+  world.interact.push({ get pos(){ return L.owlNpc.pos; }, r:2.2, label:'Talk', use:f => runDlg('pemberton', null, null, { who:f.idx }) });
   // Power pedestals
   L.pedestals = [0,1].map(i => {
     const pos = new V3(5.6, 0, i ? 2.4 : -2.4);
@@ -3094,7 +3140,7 @@ function buildCh1(L){
   const vineB = mesh(new THREE.CylinderGeometry(.025,.025,.7,4), mat('#3f9a35')); vineB.position.y = .5; L.bell.add(vineB);
   world.rankeTargets.push({ pos:new V3(9,2.6,4.6), range:9, cond:() => true, fn:() => {
     L.bellSwing = 1; Sfx.ding(); Sfx.tone(1046,.8,'sine',.06,0,.1);
-    if (!state.flags.bell && Net.role !== 'guest'){ state.flags.bell = true; for (let i=0;i<4;i++){ const gm = gem('bell'+i, 9 + rand(-1.6,1.6), 0, 4.6 + rand(-1.4,.6)); gm.m.position.y = 3; }
+    if (!state.flags.bell && Net.role !== 'guest'){ state.flags.bell = true; for (let i=0;i<4;i++){ const gm = gem('bell'+i, 8.6 + rand(-1.4,.8), 0, 4.2 + rand(-1.2,.8)); gm.m.position.y = 3; }
       toast('Ding-dong! Sparkstones tumble out of the treetop.'); } } });
   L.hm = dyn(mesh(new THREE.SphereGeometry(.9,12,8,0,Math.PI*2,0,Math.PI/2), mat('#e88ac8'))); L.hm.scale.y = .45; L.hm.position.set(1.2,0,2.6); world.deco.add(L.hm);
   for (let i=0;i<6;i++){ const d = mesh(new THREE.SphereGeometry(.11,6,5), mat('#ffd0ec')); const a = i/6*Math.PI*2; d.position.set(1.2+Math.cos(a)*.5,.28,2.6+Math.sin(a)*.5); world.deco.add(d); }
@@ -3134,9 +3180,9 @@ function buildCh1(L){
   well(65.5,3,3.6); L.well = new V3(65.5,3,3.6);
   world.interact.push({ pos:L.well, r:2, label:'Climb down the well', cond:() => state.flags.village, use:() => LV.enterCaves() });
   L.benchPos = new V3(63,3,-1.8); bench(63,3,-1.8,0); bench(57,3,4.5,Math.PI);
-  world.interact.push({ pos:L.benchPos, r:1.6, label:'Squeaky bench', cond:() => state.flags.broochStart || state.flags.clueTip, use:() => runDlg('bench') });
+  world.interact.push({ pos:L.benchPos, r:1.6, label:'Squeaky bench', cond:() => state.flags.broochStart || state.flags.clueTip, use:f => runDlg('bench', null, null, { who:f.idx }) });
   [[47.5,-9.5],[47,8.5],[74.5,-9.5],[74.5,8.5],[62,9]].forEach(([x,z]) => tree(x,3,z,rand(.8,1.1),{ fruit:Math.random() < .5 ? '#ff9a62' : null }));
-  [[56,5.5],[48.5,-3],[68,-3],[74,-5]].forEach(([x,z]) => crate(x,3,z));
+  [[54.2,4.4],[48.5,-3],[68,-3],[74,-5]].forEach(([x,z]) => crate(x,3,z));
   barrel(56.8,3,-6.4); barrel(71.8,3,-4.6); barrel(72.4,3,-4.2);
   [[53.5,-4.5],[67,-4.5],[55,7.5],[66,8.5],[58,-9.7]].forEach(([x,z]) => makeLantern(x,3,z));
   for (const [x,z,c] of [[49,1.5,'#e0524a'],[71.5,-1,'#c27ad8'],[57,8.8,'#ffd45c'],[75,-2,'#e0524a']]) shroom(x,3,z,1.4,c);
@@ -3397,7 +3443,7 @@ function buildCaves(L){
   C.door = dyn(new THREE.Group()); C.door.position.set(108,0,Z-1.2); world.deco.add(C.door);
   const ring = mesh(new THREE.TorusGeometry(2.4,.35,8,24), mat('#4a4060')); ring.position.y = 2.6; C.door.add(ring);
   C.doorFace = mesh(new THREE.CircleGeometry(2.3,24), new THREE.MeshStandardMaterial({ color:'#dfe8ff', emissive:'#8aa0ff', emissiveIntensity:.25 })); C.doorFace.position.y = 2.6; C.doorFace.position.z = -.05; C.door.add(C.doorFace);
-  world.interact.push({ pos:new V3(108,0,Z), r:2.8, label:'Frosty door', use:() => runDlg('wellDoor') });
+  world.interact.push({ pos:new V3(108,0,Z), r:2.8, label:'Frosty door', use:f => runDlg('wellDoor', null, null, { who:f.idx }) });
   // the way back up
   const rope = mesh(new THREE.CylinderGeometry(.06,.06,20,5), mat('#8a6446')); rope.position.set(-2,10,Z-.6); world.deco.add(rope);
   const light = mesh(new THREE.CylinderGeometry(1.2,1.2,1,12,1,true), new THREE.MeshBasicMaterial({ color:0xffe7b0, transparent:true, opacity:.15, side:THREE.DoubleSide, depthWrite:false }), false, false); light.scale.y = 18; light.position.set(-2,9,Z); scene.add(light);
@@ -3470,7 +3516,7 @@ function decorate(L){
   // flower beds by the cottages and at home
   const bed = (x,y,z,r=.9) => { const b = mesh(new THREE.CylinderGeometry(r,r*1.05,.18,10), mat('#6b4a36'), false); b.position.set(x,y+.09,z); world.deco.add(b);
     for (let i=0;i<9;i++){ const a = rand(0,6.28), d = rand(0,r*.8); flower(x+Math.cos(a)*d, y+.15, z+Math.sin(a)*d); } };
-  [[48.2,3,-6.2],[68.4,3,-6],[53.5,3,5.2],[71,3,5.2],[-3.8,0,1.2],[3.6,0,-2.2]].forEach(([x,y,z]) => bed(x,y,z));
+  [[48.2,3,-6.2],[68.4,3,-6],[53.5,3,5.2],[71,3,5.2],[-5,0,.4],[1.6,0,-2]].forEach(([x,y,z]) => bed(x,y,z));
   // rocks and moss along island edges
   const edge = (x0,x1,z0,z1,y,n,col) => { for (let i=0;i<n;i++){ const side = Math.random() < .5; const x = side ? rand(x0,x1) : (Math.random()<.5 ? x0+.3 : x1-.3), z = side ? (Math.random()<.5 ? z0+.3 : z1-.3) : rand(z0,z1);
       if (Math.random() < .6) rockLump(x,y,z,rand(.5,1.1),col || pick(['#8a8296','#9a9088','#7a7286'])); else bush(x,y,z,rand(.5,.8)); } };
@@ -3480,16 +3526,16 @@ function decorate(L){
       const bulb = mesh(new THREE.SphereGeometry(.08,6,5), glowMat(pick(['#ffd27a','#ff9eb5','#9fdcff','#c8ff9a']), .9), false, false); bulb.position.set(x,yy,z); world.deco.add(bulb); } };
   for (const [a,b] of [[[53.5,-4.5],[67,-4.5]],[[55,7.5],[66,8.5]],[[53.5,-4.5],[55,7.5]],[[67,-4.5],[66,8.5]]]){ for (const e of [a,b]){ const po = mesh(new THREE.CylinderGeometry(.06,.07,3.2,5), mat('#6b4a36')); po.position.set(e[0],4.6,e[1]+.6); world.deco.add(po); } garland([a[0],a[1]+.6],[b[0],b[1]+.6],6.1,.7); }
   // more trees and mushrooms so islands feel lived in
-  [[-6.5,0,-5.2,'pine'],[8.8,0,-5.3,'round'],[-1,0,5.2,'puff'],[23.5,0,-1.5,'round'],[27,4,-5.3,'pine']].forEach(([x,y,z,k]) => tree(x,y,z,rand(.7,.9),{ kind:k }));
+  [[9.2,0,-5.4,'round'],[-1,0,5.2,'puff'],[23.5,0,-1.5,'round'],[27,4,-5.3,'pine']].forEach(([x,y,z,k]) => tree(x,y,z,rand(.7,.9),{ kind:k }));
   [[46.5,3,-5],[75,3,-3],[49.5,3,9.2],[70,3,9.3],[73.5,3,-1.5]].forEach(([x,y,z]) => tree(x,y,z,rand(.8,1),{ kind:Math.random() < .5 ? 'pine' : 'round', fruit:Math.random() < .4 ? '#ff9a62' : null }));
-  for (let i=0;i<7;i++){ const a = i/7*6.28; shroom(-4.6+Math.cos(a)*2.4, 0, -3.6+Math.sin(a)*2.4, 1.1, '#ff9eb5', true); }   // fairy ring round the Heart Tree
+  for (let i=0;i<7;i++){ const a = i/7*6.28; shroom(-4.6+Math.cos(a)*2, 0, -3.4+Math.sin(a)*1.8, 1.1, '#ff9eb5', true); }   // fairy ring round the Heart Tree
   for (let i=0;i<10;i++) shroom(rand(104,122),3,rand(-9,9),rand(1,1.6),pick(['#e0524a','#c27ad8','#ffd45c']));
   // a little dock and boat shed at Windspire, crates at the post office
   crate(71,3,-4.6); crate(71.6,3,-5.4,.5); barrel(83.6,3,2.2); crate(84.2,3,-1.6,.6);
 }
 
 /* ================= CHAPTER 1 · MOSSNEST · events, jobs, minigames, finale ================= */
-function talkTo(npc){ if (npc.def.dlg) runDlg(npc.def.dlg); }
+function talkTo(npc, f){ if (npc.def.dlg) runDlg(npc.def.dlg, null, null, f ? { who:f.idx } : undefined); }
 const inMain = p => p.z < 250;
 
 /* ---------- Carryables are made once at load and switched on/off (no new meshes mid-game = no stutter) ---------- */
@@ -3662,7 +3708,7 @@ const Boss = {
   retire(){
     this.state = 'retired'; if (this.m.root.parent) scene.remove(this.m.root); this.tele.visible = false; this.ring.mesh.visible = false; $('#bossbar').hidden = true;
     const r = LV.refs.npcRumpel; r.setVisible(true);
-    r.moveTo(state.decisions.rumpel === 'dorf' ? new V3(66,3,6.8) : new V3(113,3,0));
+    r.moveTo(state.decisions.rumpel === 'dorf' ? new V3(63.8,3,6.6) : new V3(113,3,0));
   },
   pickTarget(){ const a = funkis.filter(inArena); this.target = a.length ? pick(a) : null; },
   update(dt){
@@ -4000,7 +4046,7 @@ LV = {
     if (Fl.lit && L.ember && !L.ember.removed && Net.role !== 'guest') carryOff(L.ember);
     L.puffs.forEach(pf => { if (!Fl['puff'+pf.i] || pf.done) return; pf.done = true; pf.head.visible = false;
       if (!world.gems.some(g => g.id === 'puff'+pf.i)){ const g = gem('puff'+pf.i, pf.pos.x, .1, pf.pos.z); g.base = .7; g.taken = !!state.gemTaken[g.id]; g.m.visible = !g.taken; } });
-    if (Fl.bell && !world.gems.some(g => g.id === 'bell0')) for (let i=0;i<4;i++){ const g = gem('bell'+i, 9 + rand(-1.6,1.6), 0, 4.6 + rand(-1.4,.6)); g.taken = !!state.gemTaken[g.id]; g.m.visible = !g.taken; }
+    if (Fl.bell && !world.gems.some(g => g.id === 'bell0')) for (let i=0;i<4;i++){ const g = gem('bell'+i, 8.6 + rand(-1.4,.8), 0, 4.2 + rand(-1.2,.8)); g.taken = !!state.gemTaken[g.id]; g.m.visible = !g.taken; }
     for (const g of world.gems){ const t = !!state.gemTaken[g.id]; if (t !== g.taken){ g.taken = t; g.m.visible = !t; } }
     for (const p of L.pages) p.m.visible = !state.pages[p.id];
     if (L.kids && !Hide.active) L.kids.forEach(k => { if (!k.m.root.visible) k.setVisible(true); });
@@ -4172,8 +4218,9 @@ LV = {
         if (funkis.some(f => !f.dead && f.pos.distanceTo(L.sparkTurm.position) < 1.1)){ setFlag('funke_turm'); L.sparkTurm.visible = false; Sfx.hatch(); particles(L.sparkTurm.position, { n:30, color:'#ffc65a', speed:4 });
           toast(`The second spark! ${sparkCount() === 3 ? 'That\'s all three!' : (3 - sparkCount()) + ' to go.'} And what a view.`, 5); } }
       for (const p of L.pages){ if (state.pages[p.id]) continue;
-        if (funkis.some(f => !f.dead && f.pos.distanceTo(p.m.position) < 1.1)){ state.pages[p.id] = true; p.m.visible = false; Sfx.page(); persist();
-          Dialog.start([{ s:'diary', text:PAGES[p.id] }, { s:'diary', text:`Pemberton's handwriting. ${Object.keys(state.pages).length} of 4 pages found.` }]); } }
+        const finder = funkis.find(f => !f.dead && f.pos.distanceTo(p.m.position) < 1.1);
+        if (finder){ state.pages[p.id] = true; p.m.visible = false; Sfx.page(); persist();
+          Dialog.start([{ s:'diary', text:PAGES[p.id] }, { s:'diary', text:`Pemberton's handwriting. ${Object.keys(state.pages).length} of 4 pages found.` }], null, { who:finder.idx }); } }
       // falling into the pond: splash, back on the shore
       for (const f of funkis){ const P2 = L.pond; if (!f.dead && f.pos.x > P2.x0 && f.pos.x < P2.x1 && f.pos.z > P2.z0 && f.pos.z < P2.z1 && f.pos.y < P2.y){ Sfx.splash(); particles(new V3(f.pos.x, 2.6, f.pos.z), { n:20, color:'#9fd8ff', speed:3 }); fall(f); } }
       updateCrumbles(dt); updateCarry(dt);
@@ -4198,7 +4245,7 @@ LV = {
     // villagers say something when you wander past (never during a job, never over another message)
     L.barkT = (L.barkT || 0) - dt;
     const busy = Fish.active || Bake.active || Hide.active || Sumo.active || Fireflies.active || ['idle','windup','charge','stomp','dazed'].includes(Boss.state);
-    if (host && mode === 'play' && toastTimer <= 0 && L.barkT <= 0 && !busy) for (const n of world.npcs){
+    if (host && mode === 'play' && !Dialog.active && toastTimer <= 0 && L.barkT <= 0 && !busy) for (const n of world.npcs){
       const lines = BARKS[n.def.dlg]; if (!lines || !n.m.root.visible || (n.barkT || 0) > t) continue;
       if (!funkis.some(f => !f.dead && hdist(f.pos, n.pos) < 4.5 && Math.abs(f.pos.y - n.pos.y) < 2 && Math.abs(f.pos.z - n.pos.z) < 30)) continue;
       n.barkT = t + 60; L.barkT = 7; const l = pick(lines); toast(typeof l === 'function' ? l() : l, 3.5, { s:n.def.dlg }); break;
@@ -4301,7 +4348,7 @@ function groundAhead(x, z, y){
   return boxesNear(T4.set(x,0,z)).some(test) || world.dynBoxes.some(test) || (!world.gridReady && world.boxes.some(test));
 }
 function soloAI(){
-  if (!F1 || !Net.follow) return EMPTY_RAW;
+  if (!F1 || !Net.follow || mode !== 'play') return EMPTY_RAW;
   const me = funkis[Net.active], o = funkis[1 - Net.active];
   if (o.dead || me.dead || o.heldBy || o.ropeRide || o.held) return EMPTY_RAW;
   const dx = me.pos.x - o.pos.x, dz = me.pos.z - o.pos.z, d = Math.hypot(dx, dz), dy = me.pos.y - o.pos.y;
@@ -4432,13 +4479,13 @@ function buildS(){
   };
 }
 function buildU(){
-  const d = mode === 'dialog' && Dialog.cur ? { s:Dialog.cur.s || 'pemberton', t:String(Dialog.full).slice(0,300),
+  const d = Dialog.active && Dialog.cur ? { s:Dialog.cur.s || 'pemberton', t:String(Dialog.full).slice(0,300), w:Dialog.small ? Dialog.who : 0, o:Dialog.owner,
     c:Dialog.choice ? Dialog.choice.options.map(o => [String(o.label).slice(0,60), String(o.sub || '').slice(0,40), o.disabled ? 1 : 0, String(o.tag || '').slice(0,16), String(o.tagc || '').slice(0,8), o.seen ? 1 : 0]) : 0,
     v:Dialog.choice && Dialog.choice.type === 'vote' ? 1 : 0, pk:Dialog.picks, sl:Dialog.sel } : 0;
   return { m:mode, d, to:Online.lastToast, wr:Online.wardrobe,
     jb:$('#jobbar').hidden ? 0 : [$('#jobName').textContent, $('#jobScore').textContent, $('#jobSub').textContent],
     bb:$('#bossbar').hidden ? 0 : [Boss.calm, $('#bossSub').textContent],
-    dc:mode === 'dice' && Dice.o ? [String(Dice.o.title), String(Dice.o.info || ''), Dice.done ? Dice.res.roll : 0, Dice.done ? $('#diceRes').textContent : '', Dice.done && Dice.res.ok ? 1 : 0, String(Dice.o.kind || '')] : 0,
+    dc:Dice.o ? [String(Dice.o.title), String(Dice.o.info || ''), Dice.done ? Dice.res.roll : 0, Dice.done ? $('#diceRes').textContent : '', Dice.done && Dice.res.ok ? 1 : 0, String(Dice.o.kind || ''), Dice.small ? 1 : 0] : 0,
     lk:lookNow, wp:Post.wipe > 0 ? r2(Post.wipe) : 0 };
 }
 function buildW(){
@@ -4462,7 +4509,7 @@ function hostFrame(dt){
     const pr = g.presence;
     Online.remote = pr.in && typeof pr.in === 'object' ? pr.in : null;
     // the guest can also tap an answer in a vote
-    if (Array.isArray(pr.vt) && pr.vt[0] !== Online.lastVt){ Online.lastVt = pr.vt[0]; if (mode === 'dialog' && Dialog.choice && Dialog.isVote() && Dialog.shown >= Dialog.full.length) Dialog.pick(1, Math.floor(+pr.vt[1]) || 0); }
+    if (Array.isArray(pr.vt) && pr.vt[0] !== Online.lastVt){ Online.lastVt = pr.vt[0]; if (Dialog.active && Dialog.choice && Dialog.who.includes(1) && Dialog.shown >= Dialog.full.length) Dialog.pick(1, Math.floor(+pr.vt[1]) || 0); }
     if (pr.look){ const js = JSON.stringify(pr.look); if (js !== Online.lastGL){ Online.lastGL = js; const l = sanitizeLook(pr.look);
       if (l && F2){ state.look[1] = l; F2.setLook(l); persist(); updatePlayersChips(); } } }
   }
@@ -4582,7 +4629,10 @@ let guestDlgKey = '', guestDlgShown = 0;
 function mirrorUI(u, dt){
   // dialogue
   const d = u.d;
-  if (d && typeof d === 'object'){
+  const inIt = d && typeof d === 'object' && (!Array.isArray(d.w) || d.w.includes(1));
+  const tp = $('#talkpill'); tp.hidden = !(d && typeof d === 'object') || inIt;
+  if (!tp.hidden){ const sp = SPEAKERS[d.s] || { name:String(d.s || '') }; tp.textContent = `${funkis[+d.o] ? funkis[+d.o].look.name : 'Your friend'} is talking with ${sp.name}. Walk over and press Grab to join.`; }
+  if (inIt){
     const sp = SPEAKERS[d.s] || { name:String(d.s || '') };
     const key = d.s + '|' + d.t;
     if (key !== guestDlgKey){ guestDlgKey = key; guestDlgShown = 0; $('#dSpeaker').textContent = sp.name; portraitOf($('#dPortrait'), sp); $('#dialog').classList.toggle('hush', d.s === 'hush'); $('#dialog').classList.toggle('narr', !!sp.narr); }
@@ -4593,13 +4643,13 @@ function mirrorUI(u, dt){
       const rows = d.v ? [0,1] : [null];
       const html = rows.map(i => `<div class="crow${i !== null ? ' vote2' : ''}">${i !== null ? `<span class="pl p${i+1}">${esc(funkis[i] ? funkis[i].look.name : '')}</span>` : ''}${d.c.map((o, j) => {
         const sel = i === null ? (d.sl && (d.sl[0] === j || d.sl[1] === j)) : (d.sl && d.sl[i] === j), lock = i !== null && d.pk && d.pk[i] === j;
-        return `<span class="opt${sel ? ' sel' : ''}${lock ? ' locked' : ''}${o[5] ? ' seen' : ''}"${o[2] ? ' style="opacity:.4"' : ''}${i === 1 ? ` data-vj="${j}" role="button"` : ''}><span class="onum">${j+1}</span><span class="otext">${o[3] ? `<span class="ctag" style="--tc:${esc(o[4] || '#ffc65a')}">${esc(o[3])}</span>` : ''}${esc(o[0])}${o[1] ? `<small>${esc(o[1])}</small>` : ''}</span></span>`; }).join('')}</div>`).join('')
-        + `<div class="vote">${d.v ? 'Tap your answer, or vote with left/right and Power.' : `${funkis[0] ? esc(funkis[0].look.name) : 'Your host'} is choosing.`}</div>`;
+        return `<span class="opt${sel ? ' sel' : ''}${lock ? ' locked' : ''}${o[5] ? ' seen' : ''}"${o[2] ? ' style="opacity:.4"' : ''}${i === 1 || (i === null && Array.isArray(d.w) && d.w.includes(1)) ? ` data-vj="${j}" role="button"` : ''}><span class="onum">${j+1}</span><span class="otext">${o[3] ? `<span class="ctag" style="--tc:${esc(o[4] || '#ffc65a')}">${esc(o[3])}</span>` : ''}${esc(o[0])}${o[1] ? `<small>${esc(o[1])}</small>` : ''}</span></span>`; }).join('')}</div>`).join('')
+        + `<div class="vote">${d.v ? 'Tap your answer, or vote with left/right and Power.' : Array.isArray(d.w) && d.w.includes(1) && !d.w.includes(0) ? 'Tap your answer.' : `${funkis[0] ? esc(funkis[0].look.name) : 'Your host'} is choosing.`}</div>`;
       if (box.innerHTML !== html){ box.innerHTML = html;
         box.querySelectorAll('[data-vj]').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); Online.vtSeq = (Online.vtSeq || 0) + 1; Online.nr && Online.nr.presence({ vt:[Online.vtSeq, +el.dataset.vj] }).catch(() => {}); Sfx.ding(); })); }
       box.hidden = false; $('#dNext').hidden = true;
     } else { box.hidden = true; $('#dNext').hidden = false; }
-    $('#dialog').hidden = false; document.body.classList.add('talking');
+    $('#dialog').hidden = false; $('#dialog').classList.toggle('small', Array.isArray(d.w)); document.body.classList.toggle('talking', !Array.isArray(d.w));
   } else if (!$('#dialog').hidden){ $('#dialog').hidden = true; guestDlgKey = ''; document.body.classList.remove('talking'); }
   // toasts
   if (u.to && u.to.i && u.to.i !== Online.seenToast){
@@ -4610,8 +4660,8 @@ function mirrorUI(u, dt){
   const jb = $('#jobbar'); if (Array.isArray(u.jb)){ jb.hidden = false; $('#jobName').textContent = u.jb[0]; $('#jobScore').textContent = u.jb[1]; $('#jobSub').textContent = u.jb[2]; } else jb.hidden = true;
   const bb = $('#bossbar'); if (Array.isArray(u.bb)){ bb.hidden = false; $('#bossHearts').innerHTML = [0,1,2].map(i => `<span class="heart${i < +u.bb[0] ? ' on' : ''}"></span>`).join(''); $('#bossSub').textContent = u.bb[1]; } else bb.hidden = true;
   // dice
-  if (Array.isArray(u.dc)){
-    $('#dice').hidden = false; $('#diceKind').textContent = u.dc[5] || 'Skill check'; $('#diceTitle').textContent = u.dc[0]; $('#diceInfo').textContent = u.dc[1];
+  if (Array.isArray(u.dc) && (!u.dc[6] || inIt)){
+    $('#dice').hidden = false; $('#dice').classList.toggle('mini', !!u.dc[6]); $('#diceKind').textContent = u.dc[5] || 'Skill check'; $('#diceTitle').textContent = u.dc[0]; $('#diceInfo').textContent = u.dc[1];
     if (u.dc[2]){ $('#d20').classList.remove('roll'); $('#d20').textContent = u.dc[2]; $('#diceRes').textContent = u.dc[3]; $('#diceRes').className = u.dc[4] ? 'ok' : 'no'; }
     else { $('#d20').classList.add('roll'); if (Math.random() < .5) $('#d20').textContent = 1 + Math.floor(Math.random()*20); $('#diceRes').textContent = ''; }
     $('#diceHint').hidden = true;
@@ -4681,14 +4731,19 @@ addEventListener('resize', applyUiScale);
 /* ---------- Overlays ---------- */
 let overlayPrev = 'play';
 const MENU_OVERLAYS = ['dex','quests','shop','settings','startSheet','online','confirmNew'];
+const onlineLive = () => (Net.role === 'host' || Net.role === 'guest') && F1;
 function openOverlay(id){
   $$('.overlay').forEach(o => { if (o.id !== id && ['dex','quests','shop','settings'].includes(o.id)) o.hidden = true; });
   if (['play','dialog','title','workshop','end'].includes(mode)) overlayPrev = mode;
-  $('#'+id).hidden = false; if (mode === 'play' || mode === 'dialog') mode = 'pause';
+  $('#'+id).hidden = false;
+  // online the world keeps running for your friend: only your own Funki stands still while you're in a menu
+  if (onlineLive() && (mode === 'play' || mode === 'dialog')){ Input.block = true; return; }
+  if (mode === 'play' || mode === 'dialog') mode = 'pause';
   document.body.classList.remove('playing');
 }
 function closeOverlay(id){
   $('#'+id).hidden = true;
+  Input.block = $$('.overlay').some(o => !o.hidden && MENU_OVERLAYS.includes(o.id)) || !!Online.ws;
   if (mode === 'pause') setMode(overlayPrev === 'dialog' ? 'dialog' : overlayPrev === 'end' ? 'end' : 'play');
   if (overlayPrev === 'dialog') document.body.classList.add('playing');
 }
@@ -4881,7 +4936,7 @@ addEventListener('keydown', e => {
     const d = (e.code === 'ArrowUp' || e.code === 'KeyW') ? -1 : 1;
     items[(i < 0 ? 0 : (i + d + items.length) % items.length)].focus(); e.preventDefault(); return;
   }
-  if (mode === 'dialog' && /^Digit[1-9]$/.test(e.code)){ Dialog.number(+e.code.slice(5) - 1); e.preventDefault(); return; }
+  if (Dialog.active && (mode === 'dialog' || mode === 'play') && /^Digit[1-9]$/.test(e.code)){ Dialog.number(+e.code.slice(5) - 1); e.preventDefault(); return; }
   if (mode === 'play' && !e.repeat){
     if (e.code === 'KeyJ'){ openJournal(); return; }
     if (e.code === 'KeyG'){ openDex(); return; }
@@ -4934,11 +4989,13 @@ function openWorkshop(inGame, only){
   if (!inGame){ F1.pos.set(-.9,.45,1.4); F2.pos.set(.9,.45,1.4); }
   $('#wsGo').textContent = inGame ? 'Done' : "Let's go"; $('#wsBack').hidden = inGame;
   $('#workshop').hidden = false; $('#title').hidden = true; $('#hud').hidden = true; $('#players').hidden = true;
-  mode = 'workshop'; document.body.classList.remove('playing');
+  if (inGame && onlineLive() && mode === 'play'){ Online.ws = true; Input.block = true; }   // online: the friend keeps playing meanwhile
+  else { mode = 'workshop'; document.body.classList.remove('playing'); }
   renderWorkshop();
 }
 $('#wsGo').addEventListener('click', () => {
-  if (Net.role === 'guest'){ const l = state.look[1]; if (!l.name || !l.name.trim()) l.name = DEFAULT_LOOK[1].name; F2.updateTag(); guestReady(); return; }
+  const live = Online.ws; Online.ws = false; Input.block = false;
+  if (Net.role === 'guest'){ const l = state.look[1]; if (!l.name || !l.name.trim()) l.name = DEFAULT_LOOK[1].name; F2.updateTag(); if (live){ $('#workshop').hidden = true; $('#hud').hidden = false; $('#players').hidden = false; Online.myLook = l; Online.nr && Online.nr.presence({ look:l }).catch(() => {}); return; } guestReady(); return; }
   state.look.forEach((l,i) => { if (!l.name || !l.name.trim()) l.name = DEFAULT_LOOK[i].name; funkis[i].updateTag(); });
   $('#workshop').hidden = true;
   if (!wsInGame && Net.role !== 'host'){ F1.pos.set(-1.2,.6,-.7); F2.pos.set(-1.2,.6,.7); }
@@ -4978,7 +5035,10 @@ function updatePrompt(){
   promptEl.hidden = true;
   if (mode !== 'play') return;
   let best = null, bf = null, bd = 1e9;
-  for (const f of funkis){ if (f.dead || f.held) continue; if (Net.role === 'guest' && f !== F2) continue; const it = nearestInteract(f); if (it){ const d = hdist(it.pos, f.pos); if (d < bd){ bd = d; best = it; bf = f; } } }
+  for (const f of funkis){ if (f.dead || f.held) continue; if (Net.role === 'guest' && f !== F2) continue; if (Net.role === 'host' && f !== F1) continue;
+    if (Dialog.active && Dialog.small && Dialog.who.includes(f.idx)) continue;
+    if (Dialog.joinable(f)){ best = { pos:funkis[Dialog.owner].pos, label:'Join in', npc:true }; bf = f; break; }
+    const it = nearestInteract(f); if (it){ const d = hdist(it.pos, f.pos); if (d < bd){ bd = d; best = it; bf = f; } } }
   if (!best) return;
   promptEl.innerHTML = `<kbd>${esc(keyShort(bf.idx,'grab'))}</kbd>${esc(best.label)}`;
   placeTag(promptEl, best.pos, best.npc ? 2.1 : 1.9); promptEl.hidden = false;
@@ -5100,8 +5160,8 @@ function tick(now){
   if (Net.role === 'guest'){ guestNetTick(dt); if (Online.inited) guestFrame(dt); }
   else if (mode === 'play'){ step(dt); saveT += dt; if (saveT > 8){ saveT = 0; persist(); } }
   if (Net.role === 'host') hostFrame(dt); else if (Net.role === 'solo') updateNetPill();
-  if (mode === 'dialog') Dialog.update(dt);
-  if (mode === 'dice') Dice.update(dt);
+  if (Dialog.active && (mode === 'dialog' || mode === 'play')) Dialog.update(dt);
+  if (mode === 'dice' || (Dice.small && Dice.o)) Dice.update(dt);
   if (mode === 'card'){ cardT += dt; if (cardT > .6 && Input.P.some(p => p.pr.jump || p.pr.power)) closeCard(); }
   if (toastTimer > 0){ toastTimer -= dt; if (toastTimer <= 0) $('#toast').hidden = true; }
   Music.update(dt, !!state.flags.lit);
@@ -5203,7 +5263,7 @@ $('#waStart').addEventListener('click', hostStart);
 $('#waCancel').addEventListener('click', () => { try { Online.nr && Online.nr.leave(); Online.room && Online.room.presence({ lb:null }); } catch(e){} location.reload(); });
 
 // Developer access for tests and future tools (e.g. a level editor)
-window.__laternenland = { get state(){ return state; }, LV, world, Dialog, Sumo, Boss, Fireflies, Raft, Parcels, Bake, Fish, Hide, Hollow, Carry, Post, Cam, Perf,
+window.__laternenland = { get state(){ return state; }, LV, world, Dialog, Dice, Sumo, Boss, Fireflies, Raft, Parcels, Bake, Fish, Hide, Hollow, Carry, Post, Cam, Perf,
   Net, Online, Input, get funkis(){ return funkis; }, get eggs(){ return eggs; }, get glims(){ return glimEnts; }, get mode(){ return mode; }, get look(){ return lookNow; },
   setMode, openWorkshop, applyLook, teleportTeam, runDlg, DLG, renderer, spawnEgg, hatchEgg, doGrab, release, setActiveGlim, showEnd };
 requestAnimationFrame(frame);
