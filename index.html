@@ -2857,6 +2857,19 @@ DLG.pemberton = { s:'pemberton', start:'a', nodes:{
   pages:{ t:'Ah. Those. I\'m a messy writer and a messier keeper. Hold on to them for me, would you? I\'m… not ready to read them yet.' },
   owl:{ t:'Granny Bramble talks too much and remembers too well. …Ask me again when the lantern is lit. I promise.' },
 } };
+/* ---------------- Barks: what villagers say when you wander past ---------------- */
+const BARKS = {
+  granny:[() => F().lit ? 'My roots haven\'t tingled like this since I was a sapling!' : 'Mind the grey, dears. It gets into your bones.', 'Has anyone seen my spectacles? …Oh. Head. Right.', () => F().funke_rumpel ? 'You calmed Rumble? With KINDNESS? Well I never.' : 'Rumble used to bring me acorns. Big ones. Loud ones.'],
+  crumbs:['Smell that? That\'s lukewarm bread. The saddest smell in the world.', () => F().bakeDone ? 'They\'re still talking about your Starlight Cake!' : 'If anyone needs a cake, I\'m standing right here. Next to the cakes.', 'Flour in my whiskers again. It\'s a lifestyle.'],
+  elsa:['Shiny things! Sparkly things! Mostly mine things!', () => F().broochDone ? 'The brooch is back where it belongs. On me.' : 'If you see anything round and silver, it\'s mine. Probably.', 'Have you SEEN how glittery that lantern hat is?'],
+  zip:['Coming through! Slowly. With a limp.', () => F().postDone ? 'Best couriers in Mossnest. I\'m putting it on a sign.' : 'Three parcels and one foot. The maths doesn\'t work.', 'I once delivered a letter to a cloud. Long story. Wet ending.'],
+  pip:['Wobble! Wobble! Who wants to wobble?', 'I\'ve never lost a sumo match. I\'ve also never had one.', () => state.trophies.sumo[0] + state.trophies.sumo[1] ? 'Rematch! Rematch! My legs are ready!' : 'The ring is waiting. The ring is always waiting.'],
+  lumi:['The grove feels emptier without my fireflies.', 'Mind the glowcaps. They giggle when you step on them.', () => F().funke_hain ? 'They found a spark for you. They\'re very proud.' : 'Ten fireflies. That\'s all I need. Ten tiny songs.'],
+  puddle:['The fish are plotting something. I can tell.', 'A good captain never leaves the dock. That\'s why I\'m always here.', () => F().fishDone ? 'You out-fished a captain. I\'ll never live it down.' : 'Fancy a duel? My rod is ready. My pride is fragile.'],
+  digby:['Mind your heads. And your feet. And your middles.', 'Hear that hum? That\'s the lantern roots. Or my stomach.', () => F().digbyDone ? 'My tunnels! My lovely clear tunnels!' : 'Crystals everywhere. Somebody throw something at them.'],
+  rumble:['Rumble is being VERY quiet now. Hear?', 'Rumble found a flower! Rumble is keeping it forever!', 'Hello small friends! Hello! HELLO!'],
+  pebble:['Pebble is watching. Pebble is always watching.', () => F().kiesel ? 'Pebble is guarding nothing now. It is very relaxing.' : 'None shall pass. Except with cake.'],
+};
 const PAGES = {
   p1:'Diary, page 12. Another lantern went out tonight. The other owls say that is perfectly normal. I do not believe them.',
   p2:'Page 31. She did not sing today. For the first time in a hundred years. I should have gone to her. I stayed.',
@@ -4126,6 +4139,14 @@ LV = {
       if (near && !(n.id === 'kiesel' && Fl.kiesel)){ const want = Math.atan2(near.pos.x - n.pos.x, near.pos.z - n.pos.z); let dy = want - n.yaw; while (dy > Math.PI) dy -= 2*Math.PI; while (dy < -Math.PI) dy += 2*Math.PI; n.yaw += dy*Math.min(1, dt*4); }
       n.m.root.rotation.y = n.yaw; n.m.body.scale.y = 1 + Math.sin(t*2 + n.ph)*.025; }
     if (L.npcLumi.m.root.visible) L.npcLumi.m.root.position.y = 3 + .25 + Math.sin(t*2)*.18;
+    // villagers say something when you wander past (never during a job, never over another message)
+    L.barkT = (L.barkT || 0) - dt;
+    const busy = Fish.active || Bake.active || Hide.active || Sumo.active || Fireflies.active || ['idle','windup','charge','stomp','dazed'].includes(Boss.state);
+    if (host && mode === 'play' && toastTimer <= 0 && L.barkT <= 0 && !busy) for (const n of world.npcs){
+      const lines = BARKS[n.def.dlg]; if (!lines || !n.m.root.visible || (n.barkT || 0) > t) continue;
+      if (!funkis.some(f => !f.dead && hdist(f.pos, n.pos) < 4.5 && Math.abs(f.pos.y - n.pos.y) < 2 && Math.abs(f.pos.z - n.pos.z) < 30)) continue;
+      n.barkT = t + 60; L.barkT = 7; const l = pick(lines); toast(typeof l === 'function' ? l() : l, 3.5, { s:n.def.dlg }); break;
+    }
     // the village fades back to colour with every spark
     const fogA = .22 * (1 - sparkCount()/3), fm = L.fog[0].material;
     fm.opacity = approach(fm.opacity, fogA, dt*.05);
