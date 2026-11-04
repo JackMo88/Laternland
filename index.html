@@ -1001,7 +1001,9 @@ const canvas = $('#game');
 const coarse = matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias:!coarse, alpha:true, powerPreference:'high-performance' });
 renderer.setClearColor(0x000000, 0);
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = coarse ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+// phones can lose the graphics context when memory runs low: save and reload instead of showing a frozen picture
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); try { persist(); } catch(_){} setTimeout(() => location.reload(), 300); });
 renderer.shadowMap.autoUpdate = false; // updated from the loop (every frame, or every 2nd frame when the device struggles)
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x3d3470, 40, 125);
@@ -1014,7 +1016,7 @@ function basePixelRatio(){
   if (q === 'high') return Math.min(dpr, coarse ? 2 : 2);
   if (q === 'medium') return Math.min(dpr, 1.35);
   if (q === 'low') return Math.min(dpr, 1);
-  return Math.min(dpr, coarse ? 1.6 : 2);       // auto
+  return Math.min(dpr, coarse ? 1.1 : 2);       // auto (phones: sharp enough, much faster)
 }
 let resizeHook = null;
 function resize(){ renderer.setPixelRatio(basePixelRatio() * Perf.scale); renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); if (resizeHook) resizeHook(); }
@@ -1050,7 +1052,7 @@ function applyQuality(){
   const q = Settings.d.quality;
   Perf.scale = 1;
   moon.castShadow = q !== 'low';
-  const sz = q === 'high' ? 2048 : q === 'low' ? 512 : coarse ? 1024 : 2048;
+  const sz = q === 'high' ? 2048 : q === 'low' ? 512 : coarse ? 512 : 2048;
   moon.shadow.mapSize.set(sz, sz); if (moon.shadow.map){ moon.shadow.map.dispose(); moon.shadow.map = null; }
   dust.visible = q !== 'low';
   resize();
@@ -1085,7 +1087,7 @@ function addCollider(x0,y0,z0,x1,y1,z1, o={}){
   const b = Object.assign({ min:new V3(x0,y0,z0), max:new V3(x1,y1,z1), enabled:true, delta:new V3() }, o);
   world.boxes.push(b); if (b.dyn || world.gridReady) world.dynBoxes.push(b); return b;
 }
-const lowQ = () => Settings.d.quality === 'low';
+const lowQ = () => Settings.d.quality === 'low' || (coarse && Settings.d.quality === 'auto');
 
 /* --- Collision grid: static boxes are looked up by 10 m cells, moving boxes are always checked --- */
 const CELL = 10;
@@ -1188,7 +1190,7 @@ function bush(x,y,z,s=1,col='#4f9a4a'){
 }
 function fern(x,y,z,s=1){
   const g = new THREE.Group(); g.position.set(x,y,z); g.scale.setScalar(s);
-  for (let i=0;i<5;i++){ const l = mesh(new THREE.BoxGeometry(.08,.02,.6), mat('#5aa85a'), false); l.position.set(0,.12,.25); const p = new THREE.Group(); p.rotation.y = i/5*Math.PI*2; p.rotation.z = 0; l.rotation.x = -.5; p.add(l); g.add(p); }
+  for (let i=0;i<6;i++){ const l = mesh(new THREE.ConeGeometry(.12,.7,4), mat(i%2 ? '#5aa85a' : '#4f9a4a'), false); l.scale.z = .25; l.position.set(0,.3,.18); l.rotation.x = .55; const p = new THREE.Group(); p.rotation.y = i/6*Math.PI*2; p.add(l); g.add(p); }
   world.deco.add(g);
 }
 function shroom(x,y,z,s=1,cap='#e0524a',glow=false){
@@ -3157,7 +3159,7 @@ function buildCh1(L){
     const orb = dyn(mesh(new THREE.SphereGeometry(.22,12,10), glowMat('#ffc65a',1.3), false, false)); orb.position.set(x,4.1,z); orb.visible = false; world.deco.add(orb);
     return { flag, orb }; });
   L.fog = [];
-  const fogM = new THREE.MeshStandardMaterial({ color:0x8e8ca8, transparent:true, opacity:.2, flatShading:true, depthWrite:false });
+  const fogM = new THREE.MeshStandardMaterial({ color:0x8e8ca8, transparent:true, opacity:0, flatShading:true, depthWrite:false });
   for (let i=0;i<12;i++){ const fm = dyn(mesh(new THREE.IcosahedronGeometry(rand(2.2,3.6),1), fogM, false, false));
     fm.position.set(rand(46,75), 3.3 + rand(0,.8), rand(-10,9)); fm.scale.set(1.4,.22,1.2); world.deco.add(fm); L.fog.push(fm); }
 
@@ -3186,7 +3188,7 @@ function buildCh1(L){
   for (let i=0;i<6;i++){ const d = mesh(new THREE.SphereGeometry(.12,6,5), mat('#ffd0ec')); const a = i/6*Math.PI*2; d.position.set(85.5+Math.cos(a)*.55,3.3,-3.5+Math.sin(a)*.55); world.deco.add(d); }
   addCollider(84.7,3,-4.3,86.3,3.3,-2.7,{ bounceUp:15.5, onBounce:() => { Sfx.boing(); L.bm.scale.y = .25; setTimeout(() => L.bm.scale.y = .45, 160); } });
   const tw = mesh(new THREE.CylinderGeometry(1.5,1.9,15.2,10), mat('#9a9088')); tw.position.set(89.5,10.6,0); world.deco.add(tw);
-  for (let i=0;i<7;i++){ const band = mesh(new THREE.TorusGeometry(1.75-i*.04,.08,5,16), mat('#6fae55'), false); band.rotation.x = Math.PI/2; band.position.set(89.5,4.5+i*2,0); world.deco.add(band); }
+  for (let i=0;i<7;i++){ const y = 4.5+i*2, r = 1.9 - (y-3)/15.2*.4 + .05; const band = mesh(new THREE.TorusGeometry(r,.09,5,20), mat('#6fae55'), false); band.rotation.x = Math.PI/2; band.position.set(89.5,y,0); world.deco.add(band); }
   for (let i=0;i<5;i++){ const w = mesh(new THREE.BoxGeometry(.35,.5,.1), glowMat('#ffd27a',.4), false); const a = i*1.3; w.position.set(89.5+Math.sin(a)*1.72, 6+i*2.2, Math.cos(a)*1.72); w.rotation.y = a; world.deco.add(w); }
   addCollider(87.8,3,-1.7,91.2,18,1.7);
   const tplat = (x0,x1,z0,z1,top,col='#8a6446') => plat(x0,x1,z0,z1,top,{ h:.5, col });
@@ -3233,7 +3235,7 @@ function buildCh1(L){
   for (const [x,z] of [[47.8,13.3],[56.2,13.3],[47.8,20.7],[56.2,20.7]]){ const p = mesh(new THREE.CylinderGeometry(.12,.12,1.2,6), mat('#e0524a')); p.position.set(x,3.6,z); world.deco.add(p);
     const fl2 = mesh(new THREE.ConeGeometry(.25,.4,3), mat('#ffd45c')); fl2.rotation.z = -Math.PI/2; fl2.position.set(x+.2,4.1,z); world.deco.add(fl2); }
   const ringM = mesh(new THREE.TorusGeometry(3.4,.08,6,32), mat('#fff4e3')); ringM.rotation.x = Math.PI/2; ringM.position.set(52,3.06,17); world.deco.add(ringM);
-  sign('Wobble Arena',53.6,3.8,12.6,0,'#a2453c');
+  sign('Wobble Arena',53.6,3.8,13.7,0,'#a2453c');
 
   /* ===== Puddle Pond ===== */
   L.pond = { x0:63, x1:70, z0:15, z1:20, y:2.5 };
@@ -3278,6 +3280,7 @@ function buildCh1(L){
   L.kids = [ ['tipsi','tip','#9fdc8a',new V3(59,3,4)], ['tupsi','top','#c9e88a',new V3(62,3,5)] ].map(([id,dl,c,p]) => new NPC({ id, dlg:dl, name:SPEAKERS[dl].name, pos:p, solid:false, talkR:1.8,
     look:{ color:c, scale:.55, ears:'tiny', extra:b => { const sp = mesh(new THREE.ConeGeometry(.08,.3,4), mat('#5fae4a')); sp.position.y = .6; b.add(sp); } } }));
 
+  decorate(L);
   buildCaves(L); buildHollow(L); buildMemory(L);
 
   /* ===== Eggs, Sparkstones, diary pages ===== */
@@ -3324,7 +3327,7 @@ function buildCh1(L){
     [new V3(-140,0,300), b => b.pos.z > 250 && b.pos.x <= -60],
   ];
   cpDef.forEach(([p, test, home, cave]) => { const lan = makeLantern(p.x,p.y,cave ? p.z - 1.6 : p.z, false); world.cps.push({ spawn:cave ? new V3(p.x,p.y+.6,CAVE_Z) : new V3(p.x,p.y+.6,p.z-2), test, lan }); });
-  [[-6,0,-1.5],[12.5,0,-2.6],[19,0,-4.6],[29.5,4,-4.6]].forEach(([x,y,z]) => makeLantern(x,y,z));
+  [[-6,0,-1.5],[19,0,-4.6],[29.5,4,-4.6]].forEach(([x,y,z]) => makeLantern(x,y,z));
   world.areas = [
     { name:'Glowroot Caves', sub:'Under Mossbottom', look:'cave', test:p => p.z > 250 && p.x > -20 && p.x < 130 },
     { name:'Hush Hollow', sub:'Where the quiet lives', look:'hush', test:p => p.z > 250 && p.x >= 150 },
@@ -3449,6 +3452,40 @@ function buildMemory(L){
   L.lyra = buildPemberton(); L.lyra.g.scale.setScalar(.75); L.lyra.g.position.set(-129.6,0,298.2); L.lyra.g.rotation.y = -.4;
   L.lyra.g.traverse(o => { if (o.isMesh && o.material.color && o.material.color.getHexString() === '8a6a52'){ o.material = mat('#c9c2ee',{ flatShading:false }); } if (o.isMesh && o.material.color && o.material.color.getHexString() === '4a5ab0'){ o.material = mat('#ff9eb5'); } });
   scene.add(L.lyra.g);
+}
+
+/* ===== Extra structure and detail: paths, flower beds, rocks, garlands, more trees ===== */
+function decorate(L){
+  const stoneM = ['#b9a48a','#c9b49a','#a8937a'];
+  const path = (pts, y, w=.9) => { for (let i=0;i<pts.length-1;i++){ const [x0,z0] = pts[i], [x1,z1] = pts[i+1]; const n = Math.max(1, Math.round(Math.hypot(x1-x0,z1-z0)/.75));
+      for (let k=0;k<n;k++){ const t = k/n; const st = mesh(new THREE.CylinderGeometry(rand(.28,.4)*w,rand(.3,.42)*w,.08,7), mat(pick(stoneM)), false); st.position.set(x0+(x1-x0)*t+rand(-.12,.12), y+.04, z0+(z1-z0)*t+rand(-.12,.12)); st.rotation.y = rand(0,3); world.deco.add(st); } } };
+  path([[-1,1.6],[3,1.4],[6,0],[9.6,0]], 0);                 // home: lantern to bridge
+  path([[5.6,-1.6],[5.6,1.6]], 0, .7);                          // between the pedestals
+  path([[46,3.6],[50,2.4],[54,1.2]], 3);                        // village entrance to square
+  path([[60,-7.4],[60,-10.8]], 3);                              // square to grove bridge
+  path([[50.5,-5.6],[54,-3.6]], 3, .7); path([[70.6,-5.6],[66,-3.6]], 3, .7); path([[65.5,2.8],[63.5,1.2]], 3, .7);
+  path([[52,9.4],[52,13.4]], 3, .6); path([[66.5,9.4],[66.5,13.4]], 3, .6);
+  path([[60,-15.6],[60,-19],[57.5,-21.5]], 3);                  // into the grove
+  path([[84,0],[86.6,-1.2]], 3); path([[104,0],[108,1.4],[112,1]], 3);
+  // flower beds by the cottages and at home
+  const bed = (x,y,z,r=.9) => { const b = mesh(new THREE.CylinderGeometry(r,r*1.05,.18,10), mat('#6b4a36'), false); b.position.set(x,y+.09,z); world.deco.add(b);
+    for (let i=0;i<9;i++){ const a = rand(0,6.28), d = rand(0,r*.8); flower(x+Math.cos(a)*d, y+.15, z+Math.sin(a)*d); } };
+  [[48.2,3,-6.2],[68.4,3,-6],[53.5,3,5.2],[71,3,5.2],[-3.8,0,1.2],[3.6,0,-2.2]].forEach(([x,y,z]) => bed(x,y,z));
+  // rocks and moss along island edges
+  const edge = (x0,x1,z0,z1,y,n,col) => { for (let i=0;i<n;i++){ const side = Math.random() < .5; const x = side ? rand(x0,x1) : (Math.random()<.5 ? x0+.3 : x1-.3), z = side ? (Math.random()<.5 ? z0+.3 : z1-.3) : rand(z0,z1);
+      if (Math.random() < .6) rockLump(x,y,z,rand(.5,1.1),col || pick(['#8a8296','#9a9088','#7a7286'])); else bush(x,y,z,rand(.5,.8)); } };
+  edge(-7,10,-6,6,0,14); edge(18,25,-6,6,0,8); edge(45,76,-11,10,3,22); edge(50,70,-32,-15,3,14,'#5a5070'); edge(83,97,-7,7,3,10); edge(103,123,-10,10,3,16); edge(47.5,56.5,13,21,3,6);
+  // garlands of little lights across the square
+  const garland = (a, b, y, sag) => { const n = 14; for (let i=0;i<=n;i++){ const t = i/n; const x = a[0]+(b[0]-a[0])*t, z = a[1]+(b[1]-a[1])*t, yy = y - sag*4*t*(1-t);
+      const bulb = mesh(new THREE.SphereGeometry(.08,6,5), glowMat(pick(['#ffd27a','#ff9eb5','#9fdcff','#c8ff9a']), .9), false, false); bulb.position.set(x,yy,z); world.deco.add(bulb); } };
+  for (const [a,b] of [[[53.5,-4.5],[67,-4.5]],[[55,7.5],[66,8.5]],[[53.5,-4.5],[55,7.5]],[[67,-4.5],[66,8.5]]]){ for (const e of [a,b]){ const po = mesh(new THREE.CylinderGeometry(.06,.07,3.2,5), mat('#6b4a36')); po.position.set(e[0],4.6,e[1]+.6); world.deco.add(po); } garland([a[0],a[1]+.6],[b[0],b[1]+.6],6.1,.7); }
+  // more trees and mushrooms so islands feel lived in
+  [[-6.5,0,-5.2,'pine'],[8.8,0,-5.3,'round'],[-1,0,5.2,'puff'],[23.5,0,-1.5,'round'],[27,4,-5.3,'pine']].forEach(([x,y,z,k]) => tree(x,y,z,rand(.7,.9),{ kind:k }));
+  [[46.5,3,-5],[75,3,-3],[49.5,3,9.2],[70,3,9.3],[73.5,3,-1.5]].forEach(([x,y,z]) => tree(x,y,z,rand(.8,1),{ kind:Math.random() < .5 ? 'pine' : 'round', fruit:Math.random() < .4 ? '#ff9a62' : null }));
+  for (let i=0;i<7;i++){ const a = i/7*6.28; shroom(-4.6+Math.cos(a)*2.4, 0, -3.6+Math.sin(a)*2.4, 1.1, '#ff9eb5', true); }   // fairy ring round the Heart Tree
+  for (let i=0;i<10;i++) shroom(rand(104,122),3,rand(-9,9),rand(1,1.6),pick(['#e0524a','#c27ad8','#ffd45c']));
+  // a little dock and boat shed at Windspire, crates at the post office
+  crate(71,3,-4.6); crate(71.6,3,-5.4,.5); barrel(83.6,3,2.2); crate(84.2,3,-1.6,.6);
 }
 
 /* ================= CHAPTER 1 · MOSSNEST · events, jobs, minigames, finale ================= */
@@ -4167,7 +4204,7 @@ LV = {
       n.barkT = t + 60; L.barkT = 7; const l = pick(lines); toast(typeof l === 'function' ? l() : l, 3.5, { s:n.def.dlg }); break;
     }
     // the village fades back to colour with every spark
-    const fogA = .22 * (1 - sparkCount()/3), fm = L.fog[0].material;
+    const fogA = 0, fm = L.fog[0].material;   // the old fog blobs looked like floating bubbles: the grey now lives in the sky and lights
     fm.opacity = approach(fm.opacity, fogA, dt*.05);
     L.fog.forEach((f,i) => { f.visible = fm.opacity > .01; f.position.x += Math.sin(t*.2 + i)*.004; });
     L.sockets.forEach(s => { s.orb.visible = !!Fl[s.flag]; if (s.orb.visible) s.orb.position.y = 4.1 + Math.sin(t*2 + s.orb.position.x)*.08; });
@@ -5045,9 +5082,19 @@ function step(dt){
   updateHUD(dt);
 }
 let last = performance.now(), saveT = 0, frameNo = 0;
+let frameErr = 0;
+const safe = fn => { try { fn(); } catch(e){ if (frameErr++ < 5) console.error(e); } };
 function frame(now){
   requestAnimationFrame(frame);
-  const dt = Math.min(.05, Math.max(0, (now - last)/1000)); last = now; frameNo++;
+  // every part runs on its own: one failing piece can never freeze the picture again
+  safe(() => tick(now));
+  safe(() => { updateVisuals(lastDt); Cam.update(lastDt); });
+  safe(() => { renderer.shadowMap.needsUpdate = coarse ? frameNo % 3 === 0 : (Perf.fps > 50 || (frameNo & 1) === 0); Post.render(); });
+  safe(updateTags);
+}
+let lastDt = .016;
+function tick(now){
+  const dt = Math.min(.05, Math.max(0, (now - last)/1000)); last = now; frameNo++; lastDt = dt;
   perfTick(dt);
   pollInput();
   if (Net.role === 'guest'){ guestNetTick(dt); if (Online.inited) guestFrame(dt); }
@@ -5066,11 +5113,6 @@ function frame(now){
     carryLight.position.set(-2.4,1.7,.3); carryLight.distance = 16; carryLight.intensity = approach(carryLight.intensity, 1.6 + Math.sin(now/600)*.25, dt*2); }
   if (mode === 'workshop'){ const t2 = now/1000; funkis.forEach((f,i) => { f.vel.set(0,0,0); f.onGround = true;
     if (i === wsPlayer) f.face.set(Math.sin(t2*.8)*.9, 0, 1).normalize(); else f.face.lerp(T1.set(0,0,1), dt*4).normalize(); }); }
-  updateVisuals(dt);
-  Cam.update(dt);
-  renderer.shadowMap.needsUpdate = Perf.fps > 50 || (frameNo & 1) === 0;
-  Post.render();
-  updateTags();
 }
 
 /* ---------- Boot ---------- */
