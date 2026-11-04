@@ -828,12 +828,13 @@ const CHAPTER_POWERS = {
 /* ---------------- Settings ---------------- */
 const Settings = {
   key:'laternenland.settings',
-  d:{ volume:.7, music:.45, quality:'auto', text:1, touch:'auto', tags:1, ui:1.1,
+  d:{ volume:.85, music:.8, quality:'auto', text:1, touch:'auto', tags:1, ui:1.1,
       camDist:1, camPitch:'normal', camSens:1, camInvert:0, camAuto:1, touchLayout:null, shake:1 },
   load(){ try { Object.assign(this.d, JSON.parse(localStorage.getItem(this.key) || '{}')); } catch(e){} if (this.d.quality === 'hoch') this.d.quality = 'high'; if (this.d.quality === 'mittel') this.d.quality = 'medium'; if (this.d.quality === 'niedrig') this.d.quality = 'low'; if (['an','aus'].includes(this.d.touch)) this.d.touch = this.d.touch === 'an' ? 'on' : 'off'; },
   save(){ try { localStorage.setItem(this.key, JSON.stringify(this.d)); } catch(e){} },
 };
 Settings.load();
+if (!Settings.d.sndV2){ Settings.d.sndV2 = 1; Settings.d.music = Math.max(Settings.d.music, .8); Settings.d.volume = Math.max(Settings.d.volume, .85); Settings.save(); }
 
 const Save = {
   key:'laternenland.v2',
@@ -859,7 +860,7 @@ const Sfx = {
       this.apply();
     } catch(e){}
   },
-  apply(){ if (!this.ctx) return; this.master.gain.value = Settings.d.volume; this.music.gain.value = Settings.d.music * .8; },
+  apply(){ if (!this.ctx) return; this.master.gain.value = Settings.d.volume; this.music.gain.value = Settings.d.music * 1.6; },
   tone(f, d=.12, type='sine', vol=.1, slide=0, delay=0, bus){
     const c = this.ctx; if (!c) return;
     const t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
@@ -868,8 +869,8 @@ const Sfx = {
     g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(vol, t+.012); g.gain.exponentialRampToValueAtTime(.0001, t+d);
     o.connect(g); g.connect(bus || this.master); o.start(t); o.stop(t+d+.03);
   },
-  jump(){ this.tone(380,.14,'sine',.07,260); },
-  land(){ this.tone(140,.08,'triangle',.06,-40); },
+  jump(){ this.tone(380,.14,'sine',.09,260); this.tone(760,.08,'triangle',.03,200,.03); },
+  land(){ this.tone(140,.08,'triangle',.09,-40); this.tone(90,.1,'sine',.07,-30); },
   boing(){ this.tone(180,.35,'sine',.12,520); },
   grab(){ this.tone(300,.08,'square',.04,120); },
   toss(){ this.tone(520,.18,'triangle',.06,-260); },
@@ -908,10 +909,13 @@ const Music = {
     const th = this.themes[this.theme] || this.themes.day;
     this.t = th.beat;
     const bar = Math.floor(this.step/8) % 4, ch = th.prog[bar], i = this.step % 8;
-    const pat = [0,1,2,1,0,2,1,2], vol = th.wave === 'square' ? .018 : .045;
+    const pat = [0,1,2,1,0,2,1,2], vol = th.wave === 'square' ? .03 : .07;
     if (i !== 3 && i !== 7) Sfx.tone(ch[pat[i]]*2*(bright && i===6 && this.theme === 'day' ? 2 : 1), th.wave === 'square' ? .22 : .9, th.wave, vol, 0, 0, Sfx.music);
     if (i === 0) Sfx.tone(ch[0]/2, 2.6, 'sine', this.theme === 'hush' ? .05 : .07, 0, 0, Sfx.music);
-    if (Math.random() < .12) Sfx.tone(ch[2]*4, .6, 'sine', .02, 0, .2, Sfx.music);
+    if (Math.random() < .12) Sfx.tone(ch[2]*4, .6, 'sine', .03, 0, .2, Sfx.music);
+    if (i === 4) Sfx.tone(ch[1], 1.4, 'sine', .035, 0, 0, Sfx.music);   // soft middle voice
+    if (this.theme === 'day' && i % 2 === 0) Sfx.tone(60 + (i === 0 ? 0 : 20), .06, 'triangle', .04, -20, 0, Sfx.music); // little drum
+    if (this.theme === 'cave' && Math.random() < .25) Sfx.tone(rand(1800,2600), .3, 'sine', .015, -600, rand(0,.3), Sfx.music); // drips
     this.step++;
   },
 };
@@ -2273,8 +2277,8 @@ function doGrab(f, p){
 function doEmote(f){
   f.emoteT = .8; if (f.onGround) f.vel.y = 3.5;
   const o = partner(f);
-  if (!o.dead && f.pos.distanceTo(o.pos) < 1.6){ hearts(f.pos, 6); hearts(o.pos, 6); o.emoteT = .8; state.hugs++; Sfx.ding(); }
-  else hearts(f.pos, 3);
+  if (!o.dead && f.pos.distanceTo(o.pos) < 1.6){ hearts(f.pos, 6); hearts(o.pos, 6); o.emoteT = .8; state.hugs++; Sfx.ding(); Sfx.hatch(); }
+  else { hearts(f.pos, 3); Sfx.tone(660,.12,'sine',.06,220); }
   for (const g of glimEnts) if (f.pos.distanceTo(g.pos) < 2.6) cuddle(g);
   if (LV.onEmote) LV.onEmote(f);
 }
@@ -4942,6 +4946,7 @@ function updateVisuals(dt){
     f.squashV += (-f.squash) * 160 * dt; f.squashV *= Math.exp(-9*dt); f.squash += f.squashV*dt;
     f.wasGround = f.onGround; f.lastVy = f.vel.y;
     if (f.onGround && sp > .4) f.phase += dt*sp*2.4; else f.phase *= Math.exp(-6*dt);
+    if (f.onGround && sp > 2 && Math.floor(f.phase/Math.PI) !== f.stepN){ f.stepN = Math.floor(f.phase/Math.PI); if (mode === 'play') Sfx.tone(rand(170,230), .05, 'triangle', .035, -60); }  // footsteps
     const walk = f.onGround ? Math.min(1, sp/5) : 0;
     m.pivot.rotation.x = f.lean;
     m.pivot.rotation.z = Math.sin(f.phase)*.14*walk + (f.heldBy ? Math.sin(t*12)*.35 : 0) + (mode === 'workshop' ? Math.sin(t*2 + f.idx)*.08 : 0);
